@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "Core window permissions only. File and command access are not enabled.",
+  "windows": ["main", "tray"],
+  "permissions": ["core:default"]
+}

@@ -1,0 +1,8 @@
+node_modules/
+dist/
+target/
+*.tsbuildinfo
+.npm-cache/
+.DS_Store
+*.local
+apps/desktop/src-tauri/gen/
