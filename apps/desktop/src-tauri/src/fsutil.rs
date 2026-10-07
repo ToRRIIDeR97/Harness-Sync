@@ -5,6 +5,8 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const MAX_FILE_BYTES: u64 = 1024 * 1024;
+/// The sync file also carries skills, so it may be larger than one tool file.
+pub const MAX_SYNC_FILE_BYTES: u64 = 8 * 1024 * 1024;
 
 pub fn hash(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
@@ -12,6 +14,10 @@ pub fn hash(bytes: &[u8]) -> String {
 
 /// Reads a regular file under the size limit. `Ok(None)` means it does not exist.
 pub fn read_text(path: &Path) -> Result<Option<String>, String> {
+    read_text_limited(path, MAX_FILE_BYTES)
+}
+
+pub fn read_text_limited(path: &Path, limit: u64) -> Result<Option<String>, String> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -23,8 +29,8 @@ pub fn read_text(path: &Path) -> Result<Option<String>, String> {
     if !metadata.is_file() {
         return Err("is not a regular file".into());
     }
-    if metadata.len() > MAX_FILE_BYTES {
-        return Err("is larger than 1 MB".into());
+    if metadata.len() > limit {
+        return Err(format!("is larger than {} MB", limit / (1024 * 1024)));
     }
     let bytes = fs::read(path).map_err(|error| error.to_string())?;
     String::from_utf8(bytes)

@@ -218,3 +218,17 @@ button:disabled { cursor: default; opacity: 0.45; }
   .main { padding: 20px 16px; }
   .mode-picker { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+.list-heading { font-size: 19px; font-weight: 600; margin-top: 8px; }
+.empty-panel.small { flex: none; padding: 20px; font-size: 16px; }
+.toggle-row.compact { padding: 14px 20px; }
+.skill-list { display: flex; flex-direction: column; gap: 12px; }
+.skill-card { display: flex; flex-direction: column; gap: 12px; padding: 18px 20px; border-radius: 16px; background: var(--surface); border: 2px solid var(--border-soft); }
+.skill-head { display: flex; align-items: center; gap: 16px; }
+.skill-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.skill-text strong { font-size: 18px; }
+.skill-text span { color: var(--subtle); }
+.skill-copies, .skill-actions, .skill-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.skill-copy { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; color: var(--subtle); }
+.skill-copy.state-error, .skill-copy.state-differs { color: var(--warn); }
+.skill-actions span, .skill-confirm span { color: var(--subtle); }

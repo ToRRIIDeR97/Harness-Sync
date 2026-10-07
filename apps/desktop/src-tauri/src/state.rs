@@ -12,6 +12,9 @@ pub struct LocalState {
     /// Hash of the text Harness Sync last wrote or confirmed for each tool.
     #[serde(default)]
     pub applied: BTreeMap<String, String>,
+    /// Hash of each skill Harness Sync last wrote or confirmed, keyed by `tool/skill`.
+    #[serde(default)]
+    pub applied_skills: BTreeMap<String, String>,
     /// Hash of the sync file bytes last applied.
     pub last_file_hash: Option<String>,
 }

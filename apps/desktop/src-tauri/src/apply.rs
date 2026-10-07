@@ -142,16 +142,18 @@ pub fn capture(document: &SyncDocument, locations: &Locations, seed: &str) -> Re
     for tool in tools::TOOLS.iter() {
         let existing = document.preset(tool.id);
         let text = read(tool.id);
+        // Skill choices are not part of the instruction files, so they carry over.
+        let shared_preset = ToolPreset { skills: existing.skills, ..ToolPreset::default() };
         let preset = if tool.id == seed {
-            ToolPreset::default()
+            shared_preset
         } else if !locations.installed(tool) || existing.mode == Mode::Off || text.trim().is_empty() {
             existing
         } else if text.trim_end() == base {
-            ToolPreset::default()
+            shared_preset
         } else if let Some(extra) = text.strip_prefix(base).filter(|rest| rest.starts_with('\n')) {
-            ToolPreset { mode: Mode::Append, text: extra.trim_start().to_owned() }
+            ToolPreset { mode: Mode::Append, text: extra.trim_start().to_owned(), skills: existing.skills }
         } else {
-            ToolPreset { mode: Mode::Custom, text }
+            ToolPreset { mode: Mode::Custom, text, skills: existing.skills }
         };
         presets.insert(tool.id.to_owned(), preset);
     }
@@ -195,8 +197,8 @@ mod tests {
 
         let created = document::create(&drive, "Be concise.".into(), "desk").unwrap();
         let mut tools = BTreeMap::new();
-        tools.insert("antigravity".to_string(), ToolPreset { mode: Mode::Custom, text: "Gemini preset".into() });
-        tools.insert("command-code".to_string(), ToolPreset { mode: Mode::Off, text: String::new() });
+        tools.insert("antigravity".to_string(), ToolPreset { mode: Mode::Custom, text: "Gemini preset".into(), skills: true });
+        tools.insert("command-code".to_string(), ToolPreset { mode: Mode::Off, text: String::new(), skills: true });
         let saved = document::save(&drive, created.revision, Presets { shared: "Be concise.".into(), tools }, "desk").unwrap();
 
         let statuses = run(Some(&saved), &desk.locations, &mut desk.state, true);
@@ -240,9 +242,9 @@ Claude extra
         assert_eq!(presets.shared, "Laptop rules
 ");
         assert_eq!(presets.tools["claude"], ToolPreset { mode: Mode::Append, text: "Claude extra
-".into() });
+".into(), skills: true });
         assert_eq!(presets.tools["antigravity"], ToolPreset { mode: Mode::Custom, text: "Gemini only
-".into() });
+".into(), skills: true });
         // OpenCode has no file yet, so it keeps receiving the shared preset.
         assert_eq!(presets.tools["opencode"], ToolPreset::default());
 

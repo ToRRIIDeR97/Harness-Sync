@@ -1,6 +1,7 @@
 mod apply;
 mod document;
 mod fsutil;
+mod skills;
 mod state;
 mod tools;
 
@@ -68,6 +69,7 @@ struct Status {
     last_checked: Option<String>,
     pending: Option<PendingFile>,
     tools: Vec<ToolStatus>,
+    skills: Vec<skills::SkillStatus>,
 }
 
 impl App {
@@ -84,6 +86,7 @@ impl App {
             _ => None,
         };
         let tools = apply::run(document, &self.locations, &mut local, write);
+        let skills = skills::run(document, &self.locations, &mut local, write);
         if write {
             if let Some(Ok((_, hash))) = &loaded {
                 local.last_file_hash = Some(hash.clone());
@@ -113,6 +116,7 @@ impl App {
                 })
             }),
             tools,
+            skills,
         })
     }
 
@@ -174,18 +178,25 @@ fn notify_remote_update(app: &AppHandle, status: &Status) {
         return;
     };
     let updated = status.tools.iter().filter(|tool| tool.state == ToolState::Updated).count();
-    if updated == 0 || document.updated_by == status.device_name {
+    let skills = status
+        .skills
+        .iter()
+        .filter(|skill| skill.copies.iter().any(|copy| copy.state == skills::SkillState::Updated))
+        .count();
+    if updated + skills == 0 || document.updated_by == status.device_name {
         return;
     }
+    let plural = |count: usize, word: &str| format!("{count} {word}{}", if count == 1 { "" } else { "s" });
+    let applied = match (updated, skills) {
+        (0, _) => plural(skills, "skill"),
+        (_, 0) => plural(updated, "tool"),
+        _ => format!("{} and {}", plural(updated, "tool"), plural(skills, "skill")),
+    };
     let _ = app
         .notification()
         .builder()
         .title("Instructions updated")
-        .body(format!(
-            "Applied presets from {} to {updated} tool{}.",
-            document.updated_by,
-            if updated == 1 { "" } else { "s" }
-        ))
+        .body(format!("Applied presets from {} to {applied}.", document.updated_by))
         .show();
 }
 
@@ -315,6 +326,37 @@ fn save_presets(app: State<'_, App>, presets: Presets, expected_revision: u64) -
         let local = LocalState::load(&app.state_path);
         let path = local.sync_file.clone().ok_or("Connect a sync file first")?;
         document::save(&path, expected_revision, presets, &local.device())?;
+        app.refresh(runtime, true)
+    })
+}
+
+/// Adds a skill from one tool's skills folder to the sync file, or replaces the synced copy.
+#[tauri::command]
+fn add_skill(app: State<'_, App>, tool: String, name: String, expected_revision: u64) -> Result<Status, String> {
+    tools::find(&tool).ok_or("Unknown tool")?;
+    if !skills::valid_name(&name) {
+        return Err("Unknown skill".into());
+    }
+    app.with_gate(|runtime| {
+        let local = LocalState::load(&app.state_path);
+        let path = local.sync_file.clone().ok_or("Connect a sync file first")?;
+        let dir = app.locations.skills_dir(&tool).join(&name);
+        let skill = skills::read(&dir)
+            .map_err(|error| format!("{} {error}", dir.display()))?
+            .ok_or_else(|| format!("{} was not found", dir.display()))?;
+        skills::validate(&name, &skill)?;
+        document::save_skill(&path, expected_revision, &name, Some(skill), &local.device())?;
+        app.refresh(runtime, true)
+    })
+}
+
+/// Removes a skill from the sync file. Unchanged copies are deleted on every computer.
+#[tauri::command]
+fn remove_skill(app: State<'_, App>, name: String, expected_revision: u64) -> Result<Status, String> {
+    app.with_gate(|runtime| {
+        let local = LocalState::load(&app.state_path);
+        let path = local.sync_file.clone().ok_or("Connect a sync file first")?;
+        document::save_skill(&path, expected_revision, &name, None, &local.device())?;
         app.refresh(runtime, true)
     })
 }
@@ -504,6 +546,8 @@ pub fn run() {
             use_this_computer,
             disconnect,
             save_presets,
+            add_skill,
+            remove_skill,
             set_device_name,
             open_main,
             get_autostart,

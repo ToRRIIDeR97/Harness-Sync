@@ -72,6 +72,14 @@ impl Locations {
         self.config_dir(id).join(file)
     }
 
+    /// The folder holding the tool's global skills, one subfolder per skill.
+    pub fn skills_dir(&self, id: &str) -> PathBuf {
+        match id {
+            "antigravity" => self.config_dir(id).join("antigravity").join("skills"),
+            _ => self.config_dir(id).join("skills"),
+        }
+    }
+
     pub fn installed(&self, tool: &Tool) -> bool {
         self.config_dir(tool.id).is_dir() || self.command_exists(tool.command)
     }
@@ -111,6 +119,9 @@ mod tests {
         assert_eq!(locations.instructions("opencode"), home.join(".config/opencode/AGENTS.md"));
         assert_eq!(locations.instructions("antigravity"), home.join(".gemini/GEMINI.md"));
         assert_eq!(locations.instructions("command-code"), home.join(".commandcode/AGENTS.md"));
+        assert_eq!(locations.skills_dir("claude"), home.join(".claude/skills"));
+        assert_eq!(locations.skills_dir("opencode"), home.join(".config/opencode/skills"));
+        assert_eq!(locations.skills_dir("antigravity"), home.join(".gemini/antigravity/skills"));
         let custom = home.join("custom");
         locations.codex_home = Some(custom.clone());
         assert_eq!(locations.instructions("codex"), custom.join("AGENTS.md"));

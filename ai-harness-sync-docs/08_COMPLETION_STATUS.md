@@ -1,5 +1,17 @@
 # Implementation and verification status
 
+## 2026-10-07: skill sync
+
+Global skills sync through the same file. The sync file is now version 4 with a `skills` map and a per-tool `skills` switch; version 3 files still load. New `skills.rs`, `add_skill` and `remove_skill` commands, a Skills page and a per-tool "Synced skills" switch.
+
+Verified:
+
+- `cargo test --lib` passes 14 tests, three new: name and path validation (rejects `..`, absolute, hidden, backslash and drive-prefixed paths), add/apply/outside-edit/replace/remove across two sandbox computers (unchanged copies deleted, edited copies kept, unrelated local skills untouched, `.DS_Store` ignored), and skills-off plus symlinked-skill refusal. Preset saves keep skills.
+- `cargo check` has no warnings. `npm run build` passes.
+- macOS run of `npm run tauri dev` against a sandbox home with a version 4 file: the launch apply wrote `review` (two files) into Claude Code's skills folder, skipped Codex (skills off) and left a local-only skill unchanged.
+
+Not yet verified: the Skills page and switch visually, adding and removing from the UI, skill folder paths for OpenCode, Antigravity and Command Code against those tools' own documentation, and Windows.
+
 ## 2026-10-06: shared instruction presets and redesign
 
 The app was rebuilt around one goal: global instructions shared across tools and computers through one Drive file. Removed: GitHub sync, per-device Drive channels, profiles, project aliases, artifact projections, config and MCP editors, thread browsing, usage readers, encrypted export, SQLite storage, Material UI, the old smoke tests and, at the user's request, file backups. The UI follows the chosen A + C design.
@@ -17,4 +29,5 @@ Not yet verified: the tray popover (shell access was not available to click the 
 
 - Concurrent saves on two computers within Drive's sync delay can still produce a Drive conflict copy; the app reports it but does not merge.
 - Outside edits to tool files are replaced on the next sync with no backup.
-- Skills and MCP definitions are not synced yet.
+- MCP definitions and project skills are not synced. Skills with binary files (images, PDFs) cannot be added.
+- Every computer needs the version 4 app once skills are in use; older versions refuse the file.
