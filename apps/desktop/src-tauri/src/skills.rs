@@ -116,13 +116,18 @@ pub fn description(skill: &Skill) -> String {
         .unwrap_or_default()
 }
 
-/// Lists the regular, non-hidden files under `dir` as `/`-separated relative paths.
+/// Hidden entries and Python bytecode caches, which Python regenerates and are not text.
+fn ignored(name: &str) -> bool {
+    name.starts_with('.') || name == "__pycache__" || name.ends_with(".pyc")
+}
+
+/// Lists the regular files under `dir` that are not ignored as `/`-separated relative paths.
 fn list_files(dir: &Path, prefix: &str, out: &mut Vec<String>) -> Result<(), String> {
     let entries = fs::read_dir(dir).map_err(|error| error.to_string())?;
     for entry in entries {
         let entry = entry.map_err(|error| error.to_string())?;
         let name = entry.file_name().into_string().map_err(|_| "has a file name that is not UTF-8".to_string())?;
-        if name.starts_with('.') {
+        if ignored(&name) {
             continue;
         }
         let relative = if prefix.is_empty() { name } else { format!("{prefix}/{name}") };
@@ -406,6 +411,9 @@ mod tests {
         fs::write(source.join("SKILL.md"), "---\ndescription: Reviews code\n---\n").unwrap();
         fs::write(source.join("scripts/check.sh"), "echo ok\n").unwrap();
         fs::write(source.join(".DS_Store"), "junk").unwrap();
+        fs::create_dir_all(source.join("scripts/__pycache__")).unwrap();
+        fs::write(source.join("scripts/__pycache__/check.cpython-314.pyc"), [0xa7u8, 0x0d, 0xff, 0x00]).unwrap();
+        fs::write(source.join("stray.pyc"), [0xffu8]).unwrap();
 
         let created = document::create(&drive, "Rules".into(), "desk").unwrap();
         let listed = run(Some(&created), &desk, &mut desk_state, false);
