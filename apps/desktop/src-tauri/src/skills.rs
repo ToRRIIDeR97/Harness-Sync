@@ -18,28 +18,47 @@ pub enum SkillState {
     Differs,
     Updated,
     Error,
-    /// Found in the tool's folder but not synced.
+    /// In the tool's folder but not part of its skill set.
     Local,
 }
 
+/// A skill in one tool's folder, or one the tool should get.
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
-pub struct SkillCopy {
-    pub tool: &'static str,
+pub struct LocalSkill {
+    pub name: String,
+    pub description: String,
+    pub files: usize,
+    /// Part of this tool's skill set.
+    pub wanted: bool,
     pub state: SkillState,
-    /// The copy changed since Harness Sync last wrote it.
+    /// The copy changed since Harness Sync last wrote or confirmed it.
     pub edited_outside: bool,
     pub message: Option<String>,
 }
 
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
-pub struct SkillStatus {
+pub struct ToolSkills {
+    pub tool: &'static str,
+    pub folder: String,
+    pub skills: Vec<LocalSkill>,
+}
+
+/// A skill stored in the sync file.
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct LibrarySkill {
     pub name: String,
     pub description: String,
-    pub synced: bool,
     pub files: usize,
-    pub copies: Vec<SkillCopy>,
+}
+
+#[derive(Serialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillsReport {
+    pub library: Vec<LibrarySkill>,
+    pub tools: Vec<ToolSkills>,
 }
 
 /// Folder names a skill may use: letters, digits, `-`, `_` and `.`, not starting with `.`.
@@ -93,7 +112,7 @@ pub fn description(skill: &Skill) -> String {
     lines
         .take_while(|line| line.trim() != "---")
         .find_map(|line| line.strip_prefix("description:"))
-        .map(|value| value.trim().trim_matches(|c| c == '"' || c == '\'').chars().take(200).collect())
+        .map(|value| value.trim().trim_matches(|c| c == '"' || c == '\'').chars().take(400).collect())
         .unwrap_or_default()
 }
 
@@ -205,125 +224,127 @@ fn local_names(dir: &Path) -> Vec<String> {
     names
 }
 
-fn copy(tool: &'static str, state: SkillState, message: Option<String>) -> SkillCopy {
-    SkillCopy { tool, state, edited_outside: false, message }
+fn local(name: &str, skill: Option<&Skill>, wanted: bool, state: SkillState, message: Option<String>) -> LocalSkill {
+    LocalSkill {
+        name: name.to_owned(),
+        description: skill.map(description).unwrap_or_default(),
+        files: skill.map(|skill| skill.files.len()).unwrap_or_default(),
+        wanted,
+        state,
+        edited_outside: false,
+        message,
+    }
 }
 
-/// Compares every installed tool's skills folder with the synced skills. With `write`, replaces
-/// differing copies and removes skills that left the sync file when the local copy is unchanged.
+/// Compares every installed tool's skills folder with its skill set. With `write`, replaces
+/// differing copies and deletes unchanged copies Harness Sync wrote that left the set.
 pub fn run(
     document: Option<&SyncDocument>,
     locations: &Locations,
     state: &mut LocalState,
     write_files: bool,
-) -> Vec<SkillStatus> {
-    let mut skills: BTreeMap<String, SkillStatus> = BTreeMap::new();
-    let synced = document.map(|doc| &doc.skills);
-    for (name, skill) in synced.into_iter().flatten() {
-        skills.insert(
-            name.clone(),
-            SkillStatus {
-                name: name.clone(),
-                description: description(skill),
-                synced: true,
-                files: skill.files.len(),
-                copies: Vec::new(),
-            },
-        );
-    }
+) -> SkillsReport {
+    let library = document
+        .map(|doc| {
+            doc.skills
+                .iter()
+                .map(|(name, skill)| LibrarySkill {
+                    name: name.clone(),
+                    description: description(skill),
+                    files: skill.files.len(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut report = SkillsReport { library, tools: Vec::new() };
     for tool in tools::TOOLS.iter().filter(|tool| locations.installed(tool)) {
         let dir = locations.skills_dir(tool.id);
-        let managed = document.is_some_and(|doc| doc.preset(tool.id).skills);
+        let wanted = document.and_then(|doc| doc.skill_set(tool.id));
+        let mut found: BTreeMap<String, LocalSkill> = BTreeMap::new();
 
-        // Skills only on this computer, which the user can add.
         for name in local_names(&dir) {
-            if managed && synced.is_some_and(|synced| synced.contains_key(&name)) {
+            if wanted.as_ref().is_some_and(|set| set.contains_key(name.as_str())) {
                 continue;
             }
-            let (local, found) = match read(&dir.join(&name)) {
-                Ok(Some(skill)) if skill.files.contains_key(ENTRY_FILE) => (Some(skill), copy(tool.id, SkillState::Local, None)),
+            let entry = match read(&dir.join(&name)) {
+                Ok(Some(skill)) if skill.files.contains_key(ENTRY_FILE) => local(&name, Some(&skill), false, SkillState::Local, None),
                 Ok(_) => continue,
-                Err(error) => (None, copy(tool.id, SkillState::Error, Some(format!("{name} {error}")))),
+                Err(error) => local(&name, None, false, SkillState::Error, Some(format!("{name} {error}"))),
             };
-            let status = skills.entry(name.clone()).or_insert_with(|| SkillStatus {
-                name: name.clone(),
-                description: String::new(),
-                synced: false,
-                files: 0,
-                copies: Vec::new(),
-            });
-            if let (Some(local), false) = (&local, status.synced) {
-                if status.description.is_empty() {
-                    status.description = description(local);
-                }
-                status.files = status.files.max(local.files.len());
-            }
-            status.copies.push(found);
+            found.insert(name, entry);
         }
 
-        let (Some(synced), true) = (synced, managed) else {
-            continue;
-        };
-        for (name, skill) in synced {
+        for (name, skill) in wanted.iter().flatten() {
             let key = format!("{}/{name}", tool.id);
             let target = dir.join(name);
-            let wanted = hash(skill);
+            let wanted_hash = hash(skill);
             let current = match read(&target) {
                 Ok(current) => current,
                 Err(error) => {
-                    let found = copy(tool.id, SkillState::Error, Some(format!("{} {error}", target.display())));
-                    skills.get_mut(name).expect("synced skill").copies.push(found);
+                    let message = Some(format!("{} {error}", target.display()));
+                    found.insert(name.to_string(), local(name, Some(skill), true, SkillState::Error, message));
                     continue;
                 }
             };
             let current_hash = current.as_ref().map(hash);
-            let mut found = copy(tool.id, SkillState::InSync, None);
-            if current_hash.as_deref() != Some(wanted.as_str()) {
-                found.edited_outside = current_hash.is_some()
+            let mut entry = local(name, Some(skill), true, SkillState::InSync, None);
+            if current_hash.as_deref() != Some(wanted_hash.as_str()) {
+                entry.edited_outside = current_hash.is_some()
                     && state.applied_skills.get(&key).is_some_and(|applied| Some(applied) != current_hash.as_ref());
-                found.state = SkillState::Differs;
+                entry.state = SkillState::Differs;
                 if write_files {
                     match write(&target, skill) {
                         Ok(()) => {
-                            found.state = SkillState::Updated;
-                            found.edited_outside = false;
+                            entry.state = SkillState::Updated;
+                            entry.edited_outside = false;
+                            state.written_skills.insert(key.clone());
                         }
                         Err(error) => {
-                            found.state = SkillState::Error;
-                            found.message = Some(format!("Could not write {}: {error}", target.display()));
+                            entry.state = SkillState::Error;
+                            entry.message = Some(format!("Could not write {}: {error}", target.display()));
                         }
                     }
                 }
             }
-            if matches!(found.state, SkillState::InSync | SkillState::Updated) {
-                state.applied_skills.insert(key, wanted);
+            if matches!(entry.state, SkillState::InSync | SkillState::Updated) {
+                state.applied_skills.insert(key, wanted_hash);
             }
-            skills.get_mut(name).expect("synced skill").copies.push(found);
+            found.insert(name.to_string(), entry);
         }
 
-        // Skills removed from the sync file: delete copies nobody changed, forget the rest.
-        if write_files {
+        // Skills that left this tool's set: delete unchanged copies Harness Sync wrote, forget the rest.
+        if let (Some(set), true) = (&wanted, write_files) {
             let prefix = format!("{}/", tool.id);
             let gone: Vec<(String, String)> = state
                 .applied_skills
                 .iter()
                 .filter_map(|(key, applied)| {
                     let name = key.strip_prefix(&prefix)?;
-                    (!synced.contains_key(name)).then(|| (name.to_owned(), applied.clone()))
+                    (!set.contains_key(name)).then(|| (name.to_owned(), applied.clone()))
                 })
                 .collect();
             for (name, applied) in gone {
+                let key = format!("{prefix}{name}");
                 let target = dir.join(&name);
-                if let Ok(Some(local)) = read(&target) {
-                    if hash(&local) == applied {
-                        let _ = remove(&target, &local);
+                if state.written_skills.contains(&key) {
+                    if let Ok(Some(copy)) = read(&target) {
+                        if hash(&copy) == applied && remove(&target, &copy).is_ok() {
+                            found.remove(&name);
+                        }
                     }
                 }
-                state.applied_skills.remove(&format!("{prefix}{name}"));
+                state.applied_skills.remove(&key);
+                state.written_skills.remove(&key);
             }
         }
+
+        report.tools.push(ToolSkills {
+            tool: tool.id,
+            folder: dir.to_string_lossy().into_owned(),
+            skills: found.into_values().collect(),
+        });
     }
-    skills.into_values().collect()
+    report
 }
 
 #[cfg(test)]
@@ -343,9 +364,23 @@ mod tests {
         (locations, LocalState::default())
     }
 
-    fn copy_state(statuses: &[SkillStatus], name: &str, tool: &str) -> Option<SkillState> {
-        let status = statuses.iter().find(|status| status.name == name)?;
-        Some(status.copies.iter().find(|copy| copy.tool == tool)?.state)
+    fn find<'a>(report: &'a SkillsReport, tool: &str, name: &str) -> Option<&'a LocalSkill> {
+        let tool = report.tools.iter().find(|entry| entry.tool == tool)?;
+        tool.skills.iter().find(|skill| skill.name == name)
+    }
+
+    fn state_of(report: &SkillsReport, tool: &str, name: &str) -> Option<SkillState> {
+        find(report, tool, name).map(|skill| skill.state)
+    }
+
+    fn share(path: &Path, revision: u64, names: &[&str], uploads: BTreeMap<String, Skill>, tools: BTreeMap<String, document::ToolPreset>) -> SyncDocument {
+        let presets = document::Presets {
+            shared: "Rules".into(),
+            tools,
+            shared_skills: names.iter().map(|name| name.to_string()).collect(),
+            ..Default::default()
+        };
+        document::save(path, revision, presets, uploads, "desk").unwrap()
     }
 
     #[test]
@@ -374,16 +409,18 @@ mod tests {
 
         let created = document::create(&drive, "Rules".into(), "desk").unwrap();
         let listed = run(Some(&created), &desk, &mut desk_state, false);
-        assert_eq!(copy_state(&listed, "review", "claude"), Some(SkillState::Local));
-        assert!(!listed[0].synced);
-        assert_eq!(listed[0].description, "Reviews code");
+        let found = find(&listed, "claude", "review").unwrap();
+        assert_eq!((found.state, found.wanted), (SkillState::Local, false));
+        assert_eq!(found.description, "Reviews code");
+        assert!(listed.library.is_empty());
 
         let local = read(&source).unwrap().unwrap();
         assert_eq!(local.files.len(), 2);
-        let saved = document::save_skill(&drive, created.revision, "review", Some(local.clone()), "desk").unwrap();
-        let statuses = run(Some(&saved), &desk, &mut desk_state, true);
-        assert_eq!(copy_state(&statuses, "review", "claude"), Some(SkillState::InSync));
-        assert_eq!(copy_state(&statuses, "review", "codex"), Some(SkillState::Updated));
+        let saved = share(&drive, created.revision, &["review"], [("review".to_string(), local.clone())].into(), BTreeMap::new());
+        let report = run(Some(&saved), &desk, &mut desk_state, true);
+        assert_eq!(report.library.len(), 1);
+        assert_eq!(state_of(&report, "claude", "review"), Some(SkillState::InSync));
+        assert_eq!(state_of(&report, "codex", "review"), Some(SkillState::Updated));
         assert_eq!(read(&desk.skills_dir("codex").join("review")).unwrap().unwrap(), local);
 
         // Another computer receives it; its own skill with another name is untouched.
@@ -399,24 +436,45 @@ mod tests {
         let target = laptop.skills_dir("opencode").join("review");
         fs::write(target.join("extra.md"), "extra").unwrap();
         let checked = run(Some(&from_drive), &laptop, &mut laptop_state, false);
-        let found = &checked.iter().find(|s| s.name == "review").unwrap().copies[0];
+        let found = find(&checked, "opencode", "review").unwrap();
         assert_eq!(found.state, SkillState::Differs);
         assert!(found.edited_outside);
         run(Some(&from_drive), &laptop, &mut laptop_state, true);
         assert!(!target.join("extra.md").exists());
 
-        // Removing it deletes unchanged copies and keeps edited ones.
+        // Unsharing deletes unchanged copies Harness Sync wrote, keeps edited ones and the original.
         fs::write(desk.skills_dir("codex").join("review/SKILL.md"), "edited").unwrap();
-        let removed = document::save_skill(&drive, saved.revision, "review", None, "desk").unwrap();
+        let removed = share(&drive, saved.revision, &[], BTreeMap::new(), BTreeMap::new());
         run(Some(&removed), &laptop, &mut laptop_state, true);
-        run(Some(&removed), &desk, &mut desk_state, true);
+        let report = run(Some(&removed), &desk, &mut desk_state, true);
         assert!(!target.exists());
-        // Hidden files such as .DS_Store are not part of a skill and stay.
-        assert!(!desk.skills_dir("claude").join("review/SKILL.md").exists());
-        assert!(!desk.skills_dir("claude").join("review/scripts").exists());
+        assert!(source.join("SKILL.md").exists());
+        assert_eq!(state_of(&report, "claude", "review"), Some(SkillState::Local));
         assert_eq!(fs::read_to_string(desk.skills_dir("codex").join("review/SKILL.md")).unwrap(), "edited");
         assert!(mine.join("SKILL.md").exists());
         assert!(desk_state.applied_skills.is_empty());
+        assert!(desk_state.written_skills.is_empty());
+    }
+
+    #[test]
+    fn tool_modes_pick_skills() {
+        let drive = fsutil::temp_dir("skills-modes").join("harness-sync.json");
+        let (desk, mut state) = machine("skills-modes-desk", &["claude", "codex", "opencode"]);
+        let created = document::create(&drive, "Rules".into(), "desk").unwrap();
+        let mut tools = BTreeMap::new();
+        let extras = vec!["extra".to_string()];
+        tools.insert("claude".into(), document::ToolPreset { skill_mode: document::Mode::Append, skill_extras: extras.clone(), ..Default::default() });
+        tools.insert("opencode".into(), document::ToolPreset { skill_mode: document::Mode::Custom, skill_extras: extras, ..Default::default() });
+        tools.insert("codex".into(), document::ToolPreset { skill_mode: document::Mode::Off, ..Default::default() });
+        let uploads = [("base".to_string(), skill(&[("SKILL.md", "base")])), ("extra".to_string(), skill(&[("SKILL.md", "extra")]))].into();
+        let saved = share(&drive, created.revision, &["base"], uploads, tools);
+        let report = run(Some(&saved), &desk, &mut state, true);
+        assert_eq!(state_of(&report, "claude", "base"), Some(SkillState::Updated));
+        assert_eq!(state_of(&report, "claude", "extra"), Some(SkillState::Updated));
+        assert_eq!(state_of(&report, "opencode", "base"), None);
+        assert_eq!(state_of(&report, "opencode", "extra"), Some(SkillState::Updated));
+        assert!(report.tools.iter().find(|tool| tool.tool == "codex").unwrap().skills.is_empty());
+        assert!(!desk.skills_dir("codex").join("base").exists());
     }
 
     #[test]
@@ -424,10 +482,9 @@ mod tests {
         let drive = fsutil::temp_dir("skills-off").join("harness-sync.json");
         let (desk, mut state) = machine("skills-off-desk", &["claude", "codex"]);
         let created = document::create(&drive, "Rules".into(), "desk").unwrap();
-        let mut presets = document::Presets { shared: "Rules".into(), tools: BTreeMap::new() };
-        presets.tools.insert("codex".into(), document::ToolPreset { skills: false, ..Default::default() });
-        let saved = document::save(&drive, created.revision, presets, "desk").unwrap();
-        let saved = document::save_skill(&drive, saved.revision, "tip", Some(skill(&[("SKILL.md", "tip")])), "desk").unwrap();
+        let mut tools = BTreeMap::new();
+        tools.insert("codex".into(), document::ToolPreset { skill_mode: document::Mode::Off, ..Default::default() });
+        let saved = share(&drive, created.revision, &["tip"], [("tip".to_string(), skill(&[("SKILL.md", "tip")]))].into(), tools);
 
         #[cfg(unix)]
         {
@@ -436,12 +493,12 @@ mod tests {
             fs::create_dir_all(desk.skills_dir("claude")).unwrap();
             std::os::unix::fs::symlink(&elsewhere, desk.skills_dir("claude").join("tip")).unwrap();
         }
-        let statuses = run(Some(&saved), &desk, &mut state, true);
-        assert_eq!(copy_state(&statuses, "tip", "codex"), None);
+        let report = run(Some(&saved), &desk, &mut state, true);
+        assert_eq!(state_of(&report, "codex", "tip"), None);
         assert!(!desk.skills_dir("codex").join("tip").exists());
         #[cfg(unix)]
         {
-            assert_eq!(copy_state(&statuses, "tip", "claude"), Some(SkillState::Error));
+            assert_eq!(state_of(&report, "claude", "tip"), Some(SkillState::Error));
             assert_eq!(fs::read_dir(desk.home.join("elsewhere")).unwrap().count(), 0);
         }
     }

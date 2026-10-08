@@ -17,7 +17,7 @@ Edit your global AI instructions once and keep them the same in Codex, Claude Co
 | Antigravity | `~/.gemini/GEMINI.md` |
 | Command Code | `~/.commandcode/AGENTS.md` |
 
-Global skills are synced too. Each synced skill folder (a `SKILL.md` plus text files) is copied into every installed tool's skills folder unless you turn skills off for that tool:
+Global skills sync the same way. The **Skills** page lists the skills in each tool's folder. Drag one into **Shared skills**, or choose **Share**, and every tool using the shared set gets it. On each tool's page, choose what that tool's skills folder gets: Shared, Shared + extra, Own or Off. A skill is a folder with a `SKILL.md` plus text files.
 
 | Tool | Skills folder |
 | --- | --- |
@@ -27,7 +27,7 @@ Global skills are synced too. Each synced skill folder (a `SKILL.md` plus text f
 | Antigravity | `~/.gemini/antigravity/skills/` |
 | Command Code | `~/.commandcode/skills/` |
 
-Add a skill from the **Skills** page. Skills that are only on one computer are listed there and are never touched. Project instruction files, MCP definitions and settings are not synced.
+Skills you don't share are never touched. Unsharing a skill removes the copies Harness Sync made, never the original. Project instruction files, MCP definitions and settings are not synced.
 
 ## Set up
 

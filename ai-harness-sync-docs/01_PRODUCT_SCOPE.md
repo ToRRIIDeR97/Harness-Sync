@@ -7,7 +7,7 @@ Keep global AI instructions identical across Codex, Claude Code, OpenCode, Antig
 ## Included
 
 - One **shared preset**: the global instructions most tools use.
-- Synced global skills: skill folders added from any tool on any computer are copied into every tool's global skills folder. Each tool can opt out.
+- Global skills, chosen like instructions: one shared skill set, built by dragging skills from any tool's folder on any computer. Each tool can use the shared set, the shared set plus extra skills, only its own skills, or leave its skills folder unmanaged.
 - Per-tool choice: use the shared preset, the shared preset plus tool-specific additions, the tool's own preset, or leave the tool unmanaged.
 - One `harness-sync.json` file in a Google Drive for desktop folder holding all presets. Any connected computer can edit it.
 - Automatic application at launch and whenever the file changes. Replaced tool files are not backed up, by the user's choice.
@@ -26,4 +26,4 @@ Keep global AI instructions identical across Codex, Claude Code, OpenCode, Antig
 
 ## Acceptance
 
-Editing the shared preset on one computer updates every tool that uses it, on that computer and on any other computer running the app with the same file. A tool-specific preset reaches the same tool on every computer instead of the shared preset. A synced skill appears in every opted-in tool's skills folder on every computer, and removing it deletes only unchanged copies. Stale saves are refused. Invalid files change nothing. Status never claims cloud delivery.
+Editing the shared preset on one computer updates every tool that uses it, on that computer and on any other computer running the app with the same file. A tool-specific preset reaches the same tool on every computer instead of the shared preset. A shared skill appears in the skills folder of every tool using the shared set on every computer. Unsharing deletes only unchanged copies the app wrote, never the original. Stale saves are refused. Invalid files change nothing. Status never claims cloud delivery.
