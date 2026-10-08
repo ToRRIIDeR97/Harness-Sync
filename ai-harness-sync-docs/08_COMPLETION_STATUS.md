@@ -1,5 +1,9 @@
 # Implementation and verification status
 
+## 2026-10-08: ignore Python caches in skills
+
+Skills that had run a Python script were refused with "…pyc is not UTF-8 text". `__pycache__` folders and `.pyc` files are now ignored like hidden files: not read, synced or removed. The two-computer skills test now includes both; `cargo test --lib` passes 17 tests.
+
 ## 2026-10-08: skill presets and Skills page redesign
 
 Skills now work like instructions. The sync file is version 5, with `sharedSkills`, a per-tool `skillMode` and `skillExtras`, and a library pruned to referenced skills. Version 3 and 4 files are migrated. Skill edits are part of the editor draft and saved with `save_presets`; the `add_skill` and `remove_skill` commands are gone. Unsharing deletes only copies the app wrote. The Skills page is grouped by tool, with drag-and-drop or a Share button into Shared skills. Each tool page has a Skills mode picker and a checklist for extras. Fixed: the save bar left a 28px strip where content scrolled under it, the save buttons wrapped apart in narrow windows, descriptions were cut mid-word, and the instructions preview could collapse.
