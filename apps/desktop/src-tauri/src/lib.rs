@@ -6,9 +6,10 @@ mod state;
 mod tools;
 
 use apply::{ToolState, ToolStatus};
-use document::{Presets, SyncDocument};
+use document::{Presets, Skill, SyncDocument, ToolPreset};
 use serde::Serialize;
 use state::LocalState;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -59,17 +60,42 @@ struct SyncFile {
     conflict_copies: Vec<String>,
 }
 
+/// The sync file without skill contents, which the UI does not need.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DocumentView {
+    revision: u64,
+    updated_at: String,
+    updated_by: String,
+    shared: String,
+    tools: BTreeMap<String, ToolPreset>,
+    shared_skills: Vec<String>,
+}
+
+impl From<SyncDocument> for DocumentView {
+    fn from(document: SyncDocument) -> Self {
+        Self {
+            revision: document.revision,
+            updated_at: document.updated_at,
+            updated_by: document.updated_by,
+            shared: document.shared,
+            tools: document.tools,
+            shared_skills: document.shared_skills,
+        }
+    }
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Status {
     device_name: String,
     sync_file: Option<SyncFile>,
-    document: Option<SyncDocument>,
+    document: Option<DocumentView>,
     error: Option<String>,
     last_checked: Option<String>,
     pending: Option<PendingFile>,
     tools: Vec<ToolStatus>,
-    skills: Vec<skills::SkillStatus>,
+    skills: skills::SkillsReport,
 }
 
 impl App {
@@ -104,7 +130,7 @@ impl App {
                     .unwrap_or_default(),
                 conflict_copies: document::conflict_copies(path),
             }),
-            document: loaded.and_then(Result::ok).map(|(document, _)| document),
+            document: loaded.and_then(Result::ok).map(|(document, _)| document.into()),
             error: runtime.last_error.clone(),
             last_checked: runtime.last_checked.clone(),
             pending: runtime.pending.as_deref().and_then(|path| {
@@ -118,6 +144,26 @@ impl App {
             tools,
             skills,
         })
+    }
+
+    /// Reads the skills the editor chose to upload from this computer's tool folders.
+    fn read_skill_sources(&self, presets: &Presets) -> Result<BTreeMap<String, Skill>, String> {
+        presets
+            .skill_sources
+            .iter()
+            .map(|(name, tool)| {
+                tools::find(tool).ok_or("Unknown tool")?;
+                if !skills::valid_name(name) {
+                    return Err(format!("\"{name}\" is not a valid skill name"));
+                }
+                let dir = self.locations.skills_dir(tool).join(name);
+                let skill = skills::read(&dir)
+                    .map_err(|error| format!("{} {error}", dir.display()))?
+                    .ok_or_else(|| format!("{} was not found", dir.display()))?;
+                skills::validate(name, &skill)?;
+                Ok((name.clone(), skill))
+            })
+            .collect()
     }
 
     fn with_gate<T>(&self, work: impl FnOnce(&mut Runtime) -> Result<T, String>) -> Result<T, String> {
@@ -138,7 +184,7 @@ impl App {
         let (current, _) = document::load(path)?;
         let presets = apply::capture(&current, &self.locations, seed)?;
         let device = LocalState::load(&self.state_path).device();
-        document::save(path, expected_revision.unwrap_or(current.revision), presets, &device)?;
+        document::save(path, expected_revision.unwrap_or(current.revision), presets, BTreeMap::new(), &device)?;
         Ok(())
     }
 }
@@ -180,9 +226,13 @@ fn notify_remote_update(app: &AppHandle, status: &Status) {
     let updated = status.tools.iter().filter(|tool| tool.state == ToolState::Updated).count();
     let skills = status
         .skills
+        .tools
         .iter()
-        .filter(|skill| skill.copies.iter().any(|copy| copy.state == skills::SkillState::Updated))
-        .count();
+        .flat_map(|tool| &tool.skills)
+        .filter(|skill| skill.state == skills::SkillState::Updated)
+        .map(|skill| skill.name.as_str())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
     if updated + skills == 0 || document.updated_by == status.device_name {
         return;
     }
@@ -325,38 +375,8 @@ fn save_presets(app: State<'_, App>, presets: Presets, expected_revision: u64) -
     app.with_gate(|runtime| {
         let local = LocalState::load(&app.state_path);
         let path = local.sync_file.clone().ok_or("Connect a sync file first")?;
-        document::save(&path, expected_revision, presets, &local.device())?;
-        app.refresh(runtime, true)
-    })
-}
-
-/// Adds a skill from one tool's skills folder to the sync file, or replaces the synced copy.
-#[tauri::command]
-fn add_skill(app: State<'_, App>, tool: String, name: String, expected_revision: u64) -> Result<Status, String> {
-    tools::find(&tool).ok_or("Unknown tool")?;
-    if !skills::valid_name(&name) {
-        return Err("Unknown skill".into());
-    }
-    app.with_gate(|runtime| {
-        let local = LocalState::load(&app.state_path);
-        let path = local.sync_file.clone().ok_or("Connect a sync file first")?;
-        let dir = app.locations.skills_dir(&tool).join(&name);
-        let skill = skills::read(&dir)
-            .map_err(|error| format!("{} {error}", dir.display()))?
-            .ok_or_else(|| format!("{} was not found", dir.display()))?;
-        skills::validate(&name, &skill)?;
-        document::save_skill(&path, expected_revision, &name, Some(skill), &local.device())?;
-        app.refresh(runtime, true)
-    })
-}
-
-/// Removes a skill from the sync file. Unchanged copies are deleted on every computer.
-#[tauri::command]
-fn remove_skill(app: State<'_, App>, name: String, expected_revision: u64) -> Result<Status, String> {
-    app.with_gate(|runtime| {
-        let local = LocalState::load(&app.state_path);
-        let path = local.sync_file.clone().ok_or("Connect a sync file first")?;
-        document::save_skill(&path, expected_revision, &name, None, &local.device())?;
+        let uploads = app.read_skill_sources(&presets)?;
+        document::save(&path, expected_revision, presets, uploads, &local.device())?;
         app.refresh(runtime, true)
     })
 }
@@ -546,8 +566,6 @@ pub fn run() {
             use_this_computer,
             disconnect,
             save_presets,
-            add_skill,
-            remove_skill,
             set_device_name,
             open_main,
             get_autostart,

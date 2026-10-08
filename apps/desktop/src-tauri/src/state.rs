@@ -1,6 +1,6 @@
 use crate::fsutil;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 /// Per-computer settings kept in the app data directory. Never synced.
@@ -15,6 +15,9 @@ pub struct LocalState {
     /// Hash of each skill Harness Sync last wrote or confirmed, keyed by `tool/skill`.
     #[serde(default)]
     pub applied_skills: BTreeMap<String, String>,
+    /// Skill copies Harness Sync created or replaced, keyed by `tool/skill`. Only these are ever deleted.
+    #[serde(default)]
+    pub written_skills: BTreeSet<String>,
     /// Hash of the sync file bytes last applied.
     pub last_file_hash: Option<String>,
 }

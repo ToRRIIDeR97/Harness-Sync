@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { api, hasNative, type Mode, type Presets, type SkillState, type SkillStatus, type Status, type ToolPreset, type ToolStatus } from './api'
+import { api, hasNative, type Mode, type Presets, type Status, type ToolPreset, type ToolStatus } from './api'
 import HarnessLogo from './HarnessLogo'
 import { BackIcon, CloudIcon, ComputerIcon, FolderIcon, GearIcon, LinesIcon, PlusIcon, SkillsIcon, SyncIcon, ToneIcon } from './icons'
+import { skillEdits, SkillsView, ToolSkills, type SkillEdits } from './Skills'
 import { listNames, modeLabels, shortTime, summarize } from './summary'
 
 type View = 'shared' | 'skills' | 'settings' | string
@@ -13,9 +14,9 @@ function presetsFrom(status: Status | null): Presets {
   const tools: Record<string, ToolPreset> = {}
   for (const tool of status?.tools ?? []) {
     const preset = status?.document?.tools[tool.id]
-    tools[tool.id] = { mode: preset?.mode ?? 'shared', text: preset?.text ?? '', skills: preset?.skills ?? true }
+    tools[tool.id] = { mode: preset?.mode ?? 'shared', text: preset?.text ?? '', skillMode: preset?.skillMode ?? 'shared', skillExtras: preset?.skillExtras ?? [] }
   }
-  return { shared: status?.document?.shared ?? '', tools }
+  return { shared: status?.document?.shared ?? '', tools, sharedSkills: status?.document?.sharedSkills ?? [], skillSources: {} }
 }
 
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
@@ -100,6 +101,7 @@ export default function App() {
     setDraft(current => ({ ...current, tools: { ...current.tools, [id]: { ...current.tools[id], ...change } } }))
   const save = () => run(() => api.savePresets(draft, baseRevision ?? status.document!.revision), true, 'Saved to all computers')
   const discard = () => { setDraft(saved); setBaseRevision(status.document?.revision ?? null) }
+  const edits = skillEdits(status, setDraft)
 
   return (
     <div className="app">
@@ -112,9 +114,9 @@ export default function App() {
           : !status.document
             ? <p className="lead">Waiting for the sync file…</p>
             : tool
-              ? <ToolView tool={tool} draft={draft} onMode={mode => setTool(tool.id, { mode })} onText={text => setTool(tool.id, { text })} onSkills={skills => setTool(tool.id, { skills })} onEditShared={() => setView('shared')} />
+              ? <ToolView tool={tool} status={status} draft={draft} edits={edits} onChange={change => setTool(tool.id, change)} onView={setView} />
               : view === 'skills'
-                ? <SkillsView status={status} draft={draft} busy={busy} dirty={dirty} run={run} />
+                ? <SkillsView status={status} draft={draft} edits={edits} />
                 : <SharedView status={status} draft={draft} onChange={shared => setDraft({ ...draft, shared })} />}
         {view !== 'settings' && status.document &&
           <SaveBar dirty={dirty} busy={busy} remoteBy={remoteChanged ? status.document.updatedBy : null} onSave={save} onDiscard={discard} />}
@@ -141,7 +143,8 @@ function Sidebar({ status, draft, saved, view, onView }: { status: Status; draft
       <button className={`nav-item primary-item ${view === 'skills' ? 'selected' : ''}`} aria-current={view === 'skills' ? 'page' : undefined} onClick={() => onView('skills')}>
         <SkillsIcon size={26} />
         <span className="nav-name">Skills</span>
-        <span className="pill mode-shared">{status.skills.filter(skill => skill.synced).length}</span>
+        {(!same(draft.sharedSkills, saved.sharedSkills) || Object.keys(draft.skillSources).length > 0) && <span className="dot" aria-label="Unsaved" />}
+        <span className="pill mode-shared">{draft.sharedSkills.length} shared</span>
       </button>
 
       <span className="nav-heading">Tools</span>
@@ -192,8 +195,11 @@ const stateText: Record<ToolStatus['state'], string> = {
   error: 'Needs attention',
 }
 
-function ToolView({ tool, draft, onMode, onText, onSkills, onEditShared }: { tool: ToolStatus; draft: Presets; onMode: (mode: Mode) => void; onText: (text: string) => void; onSkills: (skills: boolean) => void; onEditShared: () => void }) {
-  const preset = draft.tools[tool.id] ?? { mode: 'shared', text: '', skills: true }
+function ToolView({ tool, status, draft, edits, onChange, onView }: { tool: ToolStatus; status: Status; draft: Presets; edits: SkillEdits; onChange: (change: Partial<ToolPreset>) => void; onView: (view: View) => void }) {
+  const preset = draft.tools[tool.id]
+  const onMode = (mode: Mode) => onChange({ mode })
+  const onText = (text: string) => onChange({ text })
+  const onEditShared = () => onView('shared')
   const ownLabel = `${tool.name} only`
   return (
     <>
@@ -205,7 +211,8 @@ function ToolView({ tool, draft, onMode, onText, onSkills, onEditShared }: { too
       {tool.editedOutside && <p className="banner warn">This file was changed outside Harness Sync. The next sync replaces it.</p>}
       {!tool.installed && <p className="banner info">Your choice still applies on computers where {tool.name} is installed.</p>}
 
-      <div className="mode-picker" role="radiogroup" aria-label={`What ${tool.name} gets`}>
+      <h2 className="list-heading">Instructions</h2>
+      <div className="mode-picker" role="radiogroup" aria-label={`Which instructions ${tool.name} gets`}>
         {modes.map(mode => (
           <button key={mode} role="radio" aria-checked={preset.mode === mode} className={preset.mode === mode ? 'chosen' : ''} onClick={() => onMode(mode)}>
             {modeLabels[mode]}
@@ -231,10 +238,8 @@ function ToolView({ tool, draft, onMode, onText, onSkills, onEditShared }: { too
           </>}
         </div>}
 
-      <label className="setting toggle-row compact">
-        <span className="setting-text"><h2>Synced skills</h2><p>Copies your synced skills into {tool.name}'s skills folder.</p></span>
-        <input type="checkbox" className="switch" checked={preset.skills} onChange={event => onSkills(event.target.checked)} />
-      </label>
+      <ToolSkills tool={tool} status={status} draft={draft} preset={preset} edits={edits}
+        onMode={skillMode => onChange({ skillMode })} onEditShared={() => onView('skills')} />
     </>
   )
 }
@@ -247,96 +252,11 @@ function SaveBar({ dirty, busy, remoteBy, onSave, onDiscard }: { dirty: boolean;
         : dirty
           ? <span className="save-state warn"><span className="dot" />Unsaved changes</span>
           : <span className="save-state">All changes saved</span>}
-      <span className="spacer" />
-      <button className="big secondary" disabled={!dirty || busy} onClick={onDiscard}>{remoteBy ? 'Load their version' : 'Discard'}</button>
-      <button className="big primary" disabled={!dirty || busy || remoteBy != null} onClick={onSave}>Save to all computers</button>
+      <span className="save-actions">
+        <button className="big secondary" disabled={!dirty || busy} onClick={onDiscard}>{remoteBy ? 'Load their version' : 'Discard'}</button>
+        <button className="big primary" disabled={!dirty || busy || remoteBy != null} onClick={onSave}>Save to all computers</button>
+      </span>
     </div>
-  )
-}
-
-const skillStateText: Record<SkillState, string> = {
-  inSync: 'Up to date',
-  differs: 'Will update',
-  updated: 'Updated',
-  error: 'Needs attention',
-  local: 'Only here',
-}
-
-function SkillsView({ status, draft, busy, dirty, run }: { status: Status; draft: Presets; busy: boolean; dirty: boolean; run: Run }) {
-  const synced = status.skills.filter(skill => skill.synced)
-  const local = status.skills.filter(skill => !skill.synced)
-  const users = status.tools.filter(tool => tool.installed && draft.tools[tool.id]?.skills !== false).map(tool => tool.name)
-  const revision = status.document!.revision
-  const toolName = (id: string) => status.tools.find(tool => tool.id === id)?.name ?? id
-  const add = (tool: string, name: string, success: string) => run(() => api.addSkill(tool, name, revision), true, success)
-  return (
-    <>
-      <header className="page-header">
-        <h1>Skills</h1>
-        <p className="lead">{users.length ? `Synced skills go to ${listNames(users)} on this computer.` : 'No tool on this computer gets synced skills.'}</p>
-      </header>
-      {dirty && <p className="banner warn">Save or discard your changes first.</p>}
-
-      <h2 className="list-heading">Synced</h2>
-      {synced.length
-        ? <div className="skill-list">{synced.map(skill =>
-          <SkillCard key={skill.name} skill={skill} toolName={toolName} busy={busy || dirty}
-            onKeep={tool => add(tool, skill.name, `${toolName(tool)}'s version now goes to all computers`)}
-            onRemove={() => run(() => api.removeSkill(skill.name, revision), true, 'Skill removed')} />)}
-        </div>
-        : <div className="empty-panel small"><p>No skills are synced yet. Add one found on this computer.</p></div>}
-
-      <h2 className="list-heading">On this computer only</h2>
-      {local.length
-        ? <div className="skill-list">{local.map(skill =>
-          <SkillCard key={skill.name} skill={skill} toolName={toolName} busy={busy || dirty}
-            onAdd={tool => add(tool, skill.name, 'Skill synced to all computers')} />)}
-        </div>
-        : <div className="empty-panel small"><p>Every skill found on this computer is synced.</p></div>}
-    </>
-  )
-}
-
-function SkillCard({ skill, toolName, busy, onAdd, onKeep, onRemove }: { skill: SkillStatus; toolName: (id: string) => string; busy: boolean; onAdd?: (tool: string) => void; onKeep?: (tool: string) => void; onRemove?: () => void }) {
-  const [confirming, setConfirming] = useState(false)
-  const copies = skill.synced ? skill.copies.filter(copy => copy.state !== 'local') : skill.copies
-  const sources = skill.copies.filter(copy => copy.state === 'local')
-  const edited = copies.filter(copy => copy.editedOutside)
-  return (
-    <section className="skill-card">
-      <div className="skill-head">
-        <span className="skill-text">
-          <strong>{skill.name}</strong>
-          <span>{skill.description || 'No description'}{skill.files > 0 && ` · ${skill.files} ${skill.files === 1 ? 'file' : 'files'}`}</span>
-        </span>
-        {onRemove && !confirming && <button className="big secondary danger" disabled={busy} onClick={() => setConfirming(true)}>Remove</button>}
-      </div>
-      {confirming && onRemove &&
-        <div className="skill-confirm">
-          <span>Remove from every computer? Copies changed outside the app are kept.</span>
-          <button className="big secondary danger" disabled={busy} onClick={() => { setConfirming(false); onRemove() }}>Remove</button>
-          <button className="text-button" onClick={() => setConfirming(false)}>Cancel</button>
-        </div>}
-      {copies.length > 0 &&
-        <div className="skill-copies">
-          {copies.map(copy =>
-            <span key={copy.tool} className={`skill-copy state-${copy.state}`} title={copy.message ?? undefined}>
-              <HarnessLogo tool={copy.tool} size={22} />{toolName(copy.tool)}: {copy.editedOutside ? 'Changed outside the app' : skillStateText[copy.state]}
-            </span>)}
-        </div>}
-      {copies.filter(copy => copy.message).map(copy => <p key={copy.tool} className="setting-note">{copy.message}</p>)}
-      {edited.length > 0 && onKeep &&
-        <div className="skill-actions">
-          <span>The next sync replaces changed copies.</span>
-          {edited.map(copy => <button key={copy.tool} className="big secondary" disabled={busy} onClick={() => onKeep(copy.tool)}>Keep {toolName(copy.tool)}'s version</button>)}
-        </div>}
-      {onAdd && sources.length > 0 &&
-        <div className="skill-actions">
-          {sources.map(copy => <button key={copy.tool} className="big primary" disabled={busy} onClick={() => onAdd(copy.tool)}>
-            <PlusIcon size={18} />{sources.length > 1 ? `Sync ${toolName(copy.tool)}'s copy` : 'Sync to all computers'}
-          </button>)}
-        </div>}
-    </section>
   )
 }
 

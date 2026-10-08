@@ -2,21 +2,23 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 
 export type Mode = 'shared' | 'append' | 'custom' | 'off'
-export type ToolPreset = { mode: Mode; text: string; skills: boolean }
+export type ToolPreset = { mode: Mode; text: string; skillMode: Mode; skillExtras: string[] }
 export type ToolState = 'detected' | 'inSync' | 'differs' | 'updated' | 'skipped' | 'off' | 'notInstalled' | 'error'
 
 export type SyncDocument = {
-  version: number
   revision: number
   updatedAt: string
   updatedBy: string
   shared: string
   tools: Record<string, Partial<ToolPreset>>
+  sharedSkills: string[]
 }
 
 export type SkillState = 'inSync' | 'differs' | 'updated' | 'error' | 'local'
-export type SkillCopy = { tool: string; state: SkillState; editedOutside: boolean; message: string | null }
-export type SkillStatus = { name: string; description: string; synced: boolean; files: number; copies: SkillCopy[] }
+export type LocalSkill = { name: string; description: string; files: number; wanted: boolean; state: SkillState; editedOutside: boolean; message: string | null }
+export type ToolSkills = { tool: string; folder: string; skills: LocalSkill[] }
+export type LibrarySkill = { name: string; description: string; files: number }
+export type SkillsReport = { library: LibrarySkill[]; tools: ToolSkills[] }
 
 export type ToolStatus = {
   id: string
@@ -39,10 +41,11 @@ export type Status = {
   lastChecked: string | null
   pending: { name: string; updatedBy: string; updatedAt: string } | null
   tools: ToolStatus[]
-  skills: SkillStatus[]
+  skills: SkillsReport
 }
 
-export type Presets = { shared: string; tools: Record<string, ToolPreset> }
+/** `skillSources` names skills to read from this computer on save: skill name to tool id. */
+export type Presets = { shared: string; tools: Record<string, ToolPreset>; sharedSkills: string[]; skillSources: Record<string, string> }
 
 export const hasNative = () => '__TAURI_INTERNALS__' in window
 
@@ -57,8 +60,6 @@ export const api = {
   useThisComputer: (seedTool: string, expectedRevision: number) => invoke<Status>('use_this_computer', { seedTool, expectedRevision }),
   disconnect: () => invoke<Status>('disconnect'),
   savePresets: (presets: Presets, expectedRevision: number) => invoke<Status>('save_presets', { presets, expectedRevision }),
-  addSkill: (tool: string, name: string, expectedRevision: number) => invoke<Status>('add_skill', { tool, name, expectedRevision }),
-  removeSkill: (name: string, expectedRevision: number) => invoke<Status>('remove_skill', { name, expectedRevision }),
   setDeviceName: (name: string) => invoke<Status>('set_device_name', { name }),
   openMain: () => invoke<void>('open_main'),
   getAutostart: () => invoke<boolean>('get_autostart'),

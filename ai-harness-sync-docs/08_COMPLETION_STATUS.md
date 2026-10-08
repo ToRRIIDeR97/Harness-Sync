@@ -1,5 +1,17 @@
 # Implementation and verification status
 
+## 2026-10-08: skill presets and Skills page redesign
+
+Skills now work like instructions. The sync file is version 5, with `sharedSkills`, a per-tool `skillMode` and `skillExtras`, and a library pruned to referenced skills. Version 3 and 4 files are migrated. Skill edits are part of the editor draft and saved with `save_presets`; the `add_skill` and `remove_skill` commands are gone. Unsharing deletes only copies the app wrote. The Skills page is grouped by tool, with drag-and-drop or a Share button into Shared skills. Each tool page has a Skills mode picker and a checklist for extras. Fixed: the save bar left a 28px strip where content scrolled under it, the save buttons wrapped apart in narrow windows, descriptions were cut mid-word, and the instructions preview could collapse.
+
+Verified:
+
+- `cargo test --lib` passes 17 tests. New or changed: skill sets per mode, version 4 migration, uploads, refusal of shared skills with no content, library pruning, tool modes picking skills, and a two-computer share/unshare run where the original folder stays while written copies are removed.
+- `cargo check` has no warnings. `npm run build` passes, including `tsc`.
+- UI in the browser pane with stand-in status data (not the native window), dark mode, 1100 and 760 px wide. Checked the tool groups, badges, Share, "Use this version", dropping a skill into Shared skills (fired as DragEvents from script), the save payload (`sharedSkills`, `skillSources`, per-tool skill fields), the tool page with both mode pickers, and the save bar resting at the bottom.
+
+Not yet verified: drag-and-drop with a real mouse in the Tauri window, a sandbox `tauri dev` run (blocked because the installed app was running and the app allows one instance), and the earlier open items below.
+
 ## 2026-10-07: skill sync
 
 Global skills sync through the same file. The sync file is now version 4 with a `skills` map and a per-tool `skills` switch; version 3 files still load. New `skills.rs`, `add_skill` and `remove_skill` commands, a Skills page and a per-tool "Synced skills" switch.
@@ -30,4 +42,4 @@ Not yet verified: the tray popover (shell access was not available to click the 
 - Concurrent saves on two computers within Drive's sync delay can still produce a Drive conflict copy; the app reports it but does not merge.
 - Outside edits to tool files are replaced on the next sync with no backup.
 - MCP definitions and project skills are not synced. Skills with binary files (images, PDFs) cannot be added.
-- Every computer needs the version 4 app once skills are in use; older versions refuse the file.
+- Every computer needs the version 5 app once the file is saved by it; older versions refuse the file.

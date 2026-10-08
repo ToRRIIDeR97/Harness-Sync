@@ -143,21 +143,26 @@ pub fn capture(document: &SyncDocument, locations: &Locations, seed: &str) -> Re
         let existing = document.preset(tool.id);
         let text = read(tool.id);
         // Skill choices are not part of the instruction files, so they carry over.
-        let shared_preset = ToolPreset { skills: existing.skills, ..ToolPreset::default() };
+        let keep = |mode: Mode, text: String| ToolPreset { mode, text, ..existing.clone() };
         let preset = if tool.id == seed {
-            shared_preset
+            keep(Mode::Shared, String::new())
         } else if !locations.installed(tool) || existing.mode == Mode::Off || text.trim().is_empty() {
             existing
         } else if text.trim_end() == base {
-            shared_preset
+            keep(Mode::Shared, String::new())
         } else if let Some(extra) = text.strip_prefix(base).filter(|rest| rest.starts_with('\n')) {
-            ToolPreset { mode: Mode::Append, text: extra.trim_start().to_owned(), skills: existing.skills }
+            keep(Mode::Append, extra.trim_start().to_owned())
         } else {
-            ToolPreset { mode: Mode::Custom, text, skills: existing.skills }
+            keep(Mode::Custom, text)
         };
         presets.insert(tool.id.to_owned(), preset);
     }
-    Ok(Presets { shared, tools: presets })
+    Ok(Presets {
+        shared,
+        tools: presets,
+        shared_skills: document.shared_skills.clone(),
+        skill_sources: BTreeMap::new(),
+    })
 }
 
 #[cfg(test)]
@@ -197,9 +202,9 @@ mod tests {
 
         let created = document::create(&drive, "Be concise.".into(), "desk").unwrap();
         let mut tools = BTreeMap::new();
-        tools.insert("antigravity".to_string(), ToolPreset { mode: Mode::Custom, text: "Gemini preset".into(), skills: true });
-        tools.insert("command-code".to_string(), ToolPreset { mode: Mode::Off, text: String::new(), skills: true });
-        let saved = document::save(&drive, created.revision, Presets { shared: "Be concise.".into(), tools }, "desk").unwrap();
+        tools.insert("antigravity".to_string(), ToolPreset { mode: Mode::Custom, text: "Gemini preset".into(), ..Default::default() });
+        tools.insert("command-code".to_string(), ToolPreset { mode: Mode::Off, text: String::new(), ..Default::default() });
+        let saved = document::save(&drive, created.revision, Presets { shared: "Be concise.".into(), tools, ..Default::default() }, BTreeMap::new(), "desk").unwrap();
 
         let statuses = run(Some(&saved), &desk.locations, &mut desk.state, true);
         assert_eq!(state_of(&statuses, "claude"), ToolState::Updated);
@@ -242,13 +247,13 @@ Claude extra
         assert_eq!(presets.shared, "Laptop rules
 ");
         assert_eq!(presets.tools["claude"], ToolPreset { mode: Mode::Append, text: "Claude extra
-".into(), skills: true });
+".into(), ..Default::default() });
         assert_eq!(presets.tools["antigravity"], ToolPreset { mode: Mode::Custom, text: "Gemini only
-".into(), skills: true });
+".into(), ..Default::default() });
         // OpenCode has no file yet, so it keeps receiving the shared preset.
         assert_eq!(presets.tools["opencode"], ToolPreset::default());
 
-        let saved = document::save(&drive, created.revision, presets, "laptop").unwrap();
+        let saved = document::save(&drive, created.revision, presets, BTreeMap::new(), "laptop").unwrap();
         let statuses = run(Some(&saved), &laptop.locations, &mut laptop.state, true);
         // Every existing file already matches, so only the empty OpenCode file is written.
         assert_eq!(state_of(&statuses, "codex"), ToolState::InSync);
