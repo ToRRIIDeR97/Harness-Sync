@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 
 export type Mode = 'shared' | 'append' | 'custom' | 'off'
-export type ToolPreset = { mode: Mode; text: string }
+export type ToolPreset = { mode: Mode; text: string; skills: boolean }
 export type ToolState = 'detected' | 'inSync' | 'differs' | 'updated' | 'skipped' | 'off' | 'notInstalled' | 'error'
 
 export type SyncDocument = {
@@ -11,8 +11,12 @@ export type SyncDocument = {
   updatedAt: string
   updatedBy: string
   shared: string
-  tools: Record<string, ToolPreset>
+  tools: Record<string, Partial<ToolPreset>>
 }
+
+export type SkillState = 'inSync' | 'differs' | 'updated' | 'error' | 'local'
+export type SkillCopy = { tool: string; state: SkillState; editedOutside: boolean; message: string | null }
+export type SkillStatus = { name: string; description: string; synced: boolean; files: number; copies: SkillCopy[] }
 
 export type ToolStatus = {
   id: string
@@ -35,6 +39,7 @@ export type Status = {
   lastChecked: string | null
   pending: { name: string; updatedBy: string; updatedAt: string } | null
   tools: ToolStatus[]
+  skills: SkillStatus[]
 }
 
 export type Presets = { shared: string; tools: Record<string, ToolPreset> }
@@ -52,6 +57,8 @@ export const api = {
   useThisComputer: (seedTool: string, expectedRevision: number) => invoke<Status>('use_this_computer', { seedTool, expectedRevision }),
   disconnect: () => invoke<Status>('disconnect'),
   savePresets: (presets: Presets, expectedRevision: number) => invoke<Status>('save_presets', { presets, expectedRevision }),
+  addSkill: (tool: string, name: string, expectedRevision: number) => invoke<Status>('add_skill', { tool, name, expectedRevision }),
+  removeSkill: (name: string, expectedRevision: number) => invoke<Status>('remove_skill', { name, expectedRevision }),
   setDeviceName: (name: string) => invoke<Status>('set_device_name', { name }),
   openMain: () => invoke<void>('open_main'),
   getAutostart: () => invoke<boolean>('get_autostart'),

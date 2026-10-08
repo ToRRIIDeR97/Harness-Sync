@@ -37,4 +37,4 @@ The 2026-10-06 scope replaces the profile/publisher/review design with shared in
 
 ## Deferred
 
-Skills and MCP definitions, signed updates and a live two-computer Drive test.
+Project skills, binary skill files, MCP definitions, signed updates and a live two-computer Drive test.

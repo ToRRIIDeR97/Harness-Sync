@@ -32,8 +32,14 @@ export function summarize(status: Status | null): Summary {
   const failed = status.tools.filter(tool => tool.state === 'error')
   if (failed.length) return { tone: 'warn', title: 'Needs attention', detail: `${listNames(failed.map(tool => tool.name))} couldn't be updated` }
   if (status.syncFile.conflictCopies.length) return { tone: 'warn', title: 'Check Google Drive', detail: 'Drive made a conflict copy of your sync file' }
-  const outside = status.tools.filter(tool => tool.editedOutside)
-  if (outside.length) return { tone: 'warn', title: 'Changed outside the app', detail: listNames(outside.map(tool => tool.name)) }
-  if (status.tools.some(tool => tool.state === 'differs')) return { tone: 'warn', title: 'Waiting to sync', detail: 'Choose Sync now to update' }
+  const synced = status.skills.filter(skill => skill.synced)
+  const brokenSkills = synced.filter(skill => skill.copies.some(copy => copy.state === 'error'))
+  if (brokenSkills.length) return { tone: 'warn', title: 'Needs attention', detail: `${listNames(brokenSkills.map(skill => skill.name))} couldn't be updated` }
+  const outside = [
+    ...status.tools.filter(tool => tool.editedOutside).map(tool => tool.name),
+    ...synced.filter(skill => skill.copies.some(copy => copy.editedOutside)).map(skill => `the ${skill.name} skill`),
+  ]
+  if (outside.length) return { tone: 'warn', title: 'Changed outside the app', detail: listNames(outside) }
+  if (status.tools.some(tool => tool.state === 'differs') || synced.some(skill => skill.copies.some(copy => copy.state === 'differs'))) return { tone: 'warn', title: 'Waiting to sync', detail: 'Choose Sync now to update' }
   return { tone: 'ok', title: 'All synced', detail: `Updated ${shortTime(status.document?.updatedAt)}` }
 }

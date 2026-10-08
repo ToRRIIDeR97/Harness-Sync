@@ -7,6 +7,7 @@ Keep global AI instructions identical across Codex, Claude Code, OpenCode, Antig
 ## Included
 
 - One **shared preset**: the global instructions most tools use.
+- Synced global skills: skill folders added from any tool on any computer are copied into every tool's global skills folder. Each tool can opt out.
 - Per-tool choice: use the shared preset, the shared preset plus tool-specific additions, the tool's own preset, or leave the tool unmanaged.
 - One `harness-sync.json` file in a Google Drive for desktop folder holding all presets. Any connected computer can edit it.
 - Automatic application at launch and whenever the file changes. Replaced tool files are not backed up, by the user's choice.
@@ -17,11 +18,12 @@ Keep global AI instructions identical across Codex, Claude Code, OpenCode, Antig
 ## Excluded
 
 - Project instruction files (repository `AGENTS.md`, `CLAUDE.md`). They are project-specific.
-- Skills, prompts, agents, MCP definitions and harness settings. Deferred.
+- Project skills, binary skill files, prompts, agents, MCP definitions and harness settings. Deferred.
+- Skills that were never added to the sync file. They are listed, never changed.
 - Threads, credentials, caches and harness databases.
 - GitHub or any other transport. Google Drive for desktop moves the file.
 - Copying outside edits back into presets. Outside edits are reported, then replaced on the next sync.
 
 ## Acceptance
 
-Editing the shared preset on one computer updates every tool that uses it, on that computer and on any other computer running the app with the same file. A tool-specific preset reaches the same tool on every computer instead of the shared preset. Stale saves are refused. Invalid files change nothing. Status never claims cloud delivery.
+Editing the shared preset on one computer updates every tool that uses it, on that computer and on any other computer running the app with the same file. A tool-specific preset reaches the same tool on every computer instead of the shared preset. A synced skill appears in every opted-in tool's skills folder on every computer, and removing it deletes only unchanged copies. Stale saves are refused. Invalid files change nothing. Status never claims cloud delivery.

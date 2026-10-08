@@ -17,7 +17,17 @@ Edit your global AI instructions once and keep them the same in Codex, Claude Co
 | Antigravity | `~/.gemini/GEMINI.md` |
 | Command Code | `~/.commandcode/AGENTS.md` |
 
-Project instruction files, skills, MCP definitions and settings are not synced.
+Global skills are synced too. Each synced skill folder (a `SKILL.md` plus text files) is copied into every installed tool's skills folder unless you turn skills off for that tool:
+
+| Tool | Skills folder |
+| --- | --- |
+| Codex | `~/.codex/skills/` |
+| Claude Code | `~/.claude/skills/` |
+| OpenCode | `~/.config/opencode/skills/` |
+| Antigravity | `~/.gemini/antigravity/skills/` |
+| Command Code | `~/.commandcode/skills/` |
+
+Add a skill from the **Skills** page. Skills that are only on one computer are listed there and are never touched. Project instruction files, MCP definitions and settings are not synced.
 
 ## Set up
 

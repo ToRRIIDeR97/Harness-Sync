@@ -15,6 +15,7 @@ export const FolderIcon = (props: IconProps) => svg(<path d="M4 7a2 2 0 0 1 2-2h
 export const SyncIcon = (props: IconProps) => svg(<><path d="M20 11a8 8 0 0 0-14.3-4.9L4 8" /><path d="M4 4v4h4" /><path d="M4 13a8 8 0 0 0 14.3 4.9L20 16" /><path d="M20 20v-4h-4" /></>, props)
 export const CloudIcon = (props: IconProps) => svg(<path d="M7 18a4.5 4.5 0 0 1-.6-9A6 6 0 0 1 18 8.5a4.5 4.5 0 0 1-.5 9.5z" />, props)
 export const ComputerIcon = (props: IconProps) => svg(<><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M8 20h8M12 16v4" /></>, props)
+export const SkillsIcon = (props: IconProps) => svg(<><path d="M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z" /><path d="M5 17a3 3 0 0 1 3-3h11" /><path d="M9 8h6" /></>, props)
 export const BackIcon = (props: IconProps) => svg(<path d="M15 18l-6-6 6-6" />, props)
 
 export function ToneIcon({ tone, size }: { tone: Tone; size?: number }) {
