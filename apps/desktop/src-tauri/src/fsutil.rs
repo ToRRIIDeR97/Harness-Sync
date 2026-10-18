@@ -77,7 +77,7 @@ fn civil(seconds: u64) -> (i64, u32, u32, u32, u32, u32) {
     (year, month, day, h, m, s)
 }
 
-fn now_seconds() -> u64 {
+pub fn now_seconds() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
