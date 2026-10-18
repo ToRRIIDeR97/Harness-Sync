@@ -14,8 +14,7 @@ export default function Tray() {
   useEffect(() => {
     refresh()
     const unlisten = api.onStatusChanged(refresh)
-    window.addEventListener('focus', refresh)
-    return () => { unlisten.then(stop => stop()); window.removeEventListener('focus', refresh) }
+    return () => { unlisten.then(stop => stop()) }
   }, [refresh])
 
   const summary = summarize(status)
