@@ -11,7 +11,7 @@ pub enum ToolState {
     /// No sync file is connected yet.
     Detected,
     InSync,
-    /// The file differs and will be replaced on the next apply.
+    /// The file differs and will be replaced on the next apply, or on Sync now if edited outside.
     Differs,
     Updated,
     /// The rendered preset is empty, so the file was left alone.
@@ -38,12 +38,22 @@ pub struct ToolStatus {
     pub message: Option<String>,
 }
 
-/// Compares every tool with the presets. With `write`, replaces differing files.
+/// Which differing files an apply replaces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Write {
+    /// Compare only.
+    Never,
+    /// Automatic syncs leave files edited outside the app alone.
+    KeepOutsideEdits,
+    Always,
+}
+
+/// Compares every tool with the presets and replaces differing files as `write` allows.
 pub fn run(
     document: Option<&SyncDocument>,
     locations: &Locations,
     state: &mut LocalState,
-    write: bool,
+    write: Write,
 ) -> Vec<ToolStatus> {
     tools::TOOLS
         .iter()
@@ -103,7 +113,7 @@ pub fn run(
                 status.message = Some("The preset is empty, so this file was left unchanged.".into());
                 return status;
             }
-            if !write {
+            if write == Write::Never || (write == Write::KeepOutsideEdits && status.edited_outside) {
                 status.state = ToolState::Differs;
                 return status;
             }
@@ -206,7 +216,7 @@ mod tests {
         tools.insert("command-code".to_string(), ToolPreset { mode: Mode::Off, text: String::new(), ..Default::default() });
         let saved = document::save(&drive, created.revision, Presets { shared: "Be concise.".into(), tools, ..Default::default() }, BTreeMap::new(), "desk").unwrap();
 
-        let statuses = run(Some(&saved), &desk.locations, &mut desk.state, true);
+        let statuses = run(Some(&saved), &desk.locations, &mut desk.state, Write::Always);
         assert_eq!(state_of(&statuses, "claude"), ToolState::Updated);
         assert_eq!(state_of(&statuses, "opencode"), ToolState::NotInstalled);
         assert_eq!(state_of(&statuses, "command-code"), ToolState::Off);
@@ -219,12 +229,12 @@ mod tests {
         // The second computer only has the file.
         let mut laptop = machine("laptop", &["antigravity", "codex"]);
         let (from_drive, _) = document::load(&drive).unwrap();
-        run(Some(&from_drive), &laptop.locations, &mut laptop.state, true);
+        run(Some(&from_drive), &laptop.locations, &mut laptop.state, Write::Always);
         assert_eq!(read(&laptop, "antigravity").as_deref(), Some("Gemini preset\n"));
         assert_eq!(read(&laptop, "codex").as_deref(), Some("Be concise.\n"));
 
         // A second run changes nothing.
-        let again = run(Some(&from_drive), &laptop.locations, &mut laptop.state, true);
+        let again = run(Some(&from_drive), &laptop.locations, &mut laptop.state, Write::Always);
         assert!(again.iter().all(|s| s.state != ToolState::Updated));
     }
 
@@ -254,7 +264,7 @@ Claude extra
         assert_eq!(presets.tools["opencode"], ToolPreset::default());
 
         let saved = document::save(&drive, created.revision, presets, BTreeMap::new(), "laptop").unwrap();
-        let statuses = run(Some(&saved), &laptop.locations, &mut laptop.state, true);
+        let statuses = run(Some(&saved), &laptop.locations, &mut laptop.state, Write::Always);
         // Every existing file already matches, so only the empty OpenCode file is written.
         assert_eq!(state_of(&statuses, "codex"), ToolState::InSync);
         assert_eq!(state_of(&statuses, "claude"), ToolState::InSync);
@@ -269,10 +279,10 @@ Claude extra
         let mut desk = machine("outside", &["codex"]);
         let drive = fsutil::temp_dir("drive2").join("harness-sync.json");
         let doc = document::create(&drive, "Rules".into(), "desk").unwrap();
-        run(Some(&doc), &desk.locations, &mut desk.state, true);
+        run(Some(&doc), &desk.locations, &mut desk.state, Write::Always);
         fs::write(desk.locations.instructions("codex"), "Rules\nmy edit\n").unwrap();
 
-        let checked = run(Some(&doc), &desk.locations, &mut desk.state, false);
+        let checked = run(Some(&doc), &desk.locations, &mut desk.state, Write::Never);
         let codex = checked.iter().find(|s| s.id == "codex").unwrap();
         assert_eq!(codex.state, ToolState::Differs);
         assert!(codex.edited_outside);
@@ -281,12 +291,32 @@ Claude extra
     }
 
     #[test]
+    fn automatic_apply_keeps_outside_edits() {
+        let mut desk = machine("keep", &["codex", "claude"]);
+        let drive = fsutil::temp_dir("drive-keep").join("harness-sync.json");
+        let doc = document::create(&drive, "Rules".into(), "desk").unwrap();
+        run(Some(&doc), &desk.locations, &mut desk.state, Write::Always);
+        fs::write(desk.locations.instructions("codex"), "my edit\n").unwrap();
+        let newer = document::save(&drive, doc.revision, Presets { shared: "New rules".into(), ..Default::default() }, BTreeMap::new(), "laptop").unwrap();
+
+        let auto = run(Some(&newer), &desk.locations, &mut desk.state, Write::KeepOutsideEdits);
+        let codex = auto.iter().find(|s| s.id == "codex").unwrap();
+        assert_eq!((codex.state, codex.edited_outside), (ToolState::Differs, true));
+        assert_eq!(read(&desk, "codex").as_deref(), Some("my edit\n"));
+        assert_eq!(state_of(&auto, "claude"), ToolState::Updated);
+
+        let explicit = run(Some(&newer), &desk.locations, &mut desk.state, Write::Always);
+        assert_eq!(state_of(&explicit, "codex"), ToolState::Updated);
+        assert_eq!(read(&desk, "codex").as_deref(), Some("New rules\n"));
+    }
+
+    #[test]
     fn empty_preset_and_symlink_are_left_alone() {
         let mut desk = machine("empty", &["codex", "claude"]);
         fs::write(desk.locations.instructions("codex"), "Keep me\n").unwrap();
         let drive = fsutil::temp_dir("drive3").join("harness-sync.json");
         let doc = document::create(&drive, String::new(), "desk").unwrap();
-        let statuses = run(Some(&doc), &desk.locations, &mut desk.state, true);
+        let statuses = run(Some(&doc), &desk.locations, &mut desk.state, Write::Always);
         assert_eq!(state_of(&statuses, "codex"), ToolState::Skipped);
         assert_eq!(read(&desk, "codex").as_deref(), Some("Keep me\n"));
 
@@ -296,7 +326,7 @@ Claude extra
             fs::write(&target, "linked").unwrap();
             std::os::unix::fs::symlink(&target, desk.locations.instructions("claude")).unwrap();
             let doc = document::create(&drive.with_file_name("b.json"), "x".into(), "d").unwrap();
-            let statuses = run(Some(&doc), &desk.locations, &mut desk.state, true);
+            let statuses = run(Some(&doc), &desk.locations, &mut desk.state, Write::Always);
             assert_eq!(state_of(&statuses, "claude"), ToolState::Error);
             assert_eq!(fs::read_to_string(&target).unwrap(), "linked");
         }

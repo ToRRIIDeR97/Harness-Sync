@@ -1,4 +1,4 @@
-import type { Mode, Status } from './api'
+import type { Mode, Status, ToolPreset } from './api'
 
 export type Tone = 'ok' | 'warn' | 'error' | 'idle'
 export type Summary = { tone: Tone; title: string; detail: string }
@@ -22,6 +22,15 @@ export function shortTime(iso: string | null | undefined) {
 export function listNames(names: string[]) {
   if (names.length <= 1) return names.join('')
   return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+}
+
+/** How a tool's file text fits the shared preset, read the same way as making this computer the main one. */
+export function presetFromFile(shared: string, text: string): Pick<ToolPreset, 'mode' | 'text'> {
+  const base = shared.trimEnd()
+  if (!base) return { mode: 'custom', text }
+  if (text.trimEnd() === base) return { mode: 'shared', text: '' }
+  if (text.startsWith(`${base}\n`)) return { mode: 'append', text: text.slice(base.length).trimStart() }
+  return { mode: 'custom', text }
 }
 
 /** One headline for the whole app: what the user most needs to know. */

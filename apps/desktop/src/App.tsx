@@ -4,7 +4,7 @@ import HarnessLogo from './HarnessLogo'
 import { BackIcon, CloudIcon, ComputerIcon, FolderIcon, GearIcon, LinesIcon, PlusIcon, SkillsIcon, SyncIcon, ToneIcon } from './icons'
 import { diffLines, render } from './diff'
 import { skillEdits, SkillsView, ToolSkills, type SkillEdits } from './Skills'
-import { listNames, modeLabels, shortTime, summarize } from './summary'
+import { listNames, modeLabels, presetFromFile, shortTime, summarize } from './summary'
 
 type View = 'shared' | 'skills' | 'settings' | string
 type Run = (work: () => Promise<Status | null | void>, force?: boolean, success?: string) => Promise<void>
@@ -21,6 +21,8 @@ function presetsFrom(status: Status | null): Presets {
 }
 
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
+
+const saveHint = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘S' : 'Ctrl+S'
 
 /** Tools whose instructions on this computer can become the shared preset. */
 const localSources = (status: Status) => status.tools.filter(tool => tool.exists && tool.lines > 0 && tool.state !== 'error')
@@ -80,6 +82,18 @@ export default function App() {
     return () => clearTimeout(timer)
   }, [message])
 
+  const shortcut = useRef<(() => void) | null>(null)
+  shortcut.current = null
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 's') return
+      event.preventDefault()
+      shortcut.current?.()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
   if (!hasNative()) {
     return <div className="center-screen"><div className="first-run"><h1>Harness Sync</h1><p className="lead">Open the desktop app to manage your instructions.</p></div></div>
   }
@@ -101,6 +115,7 @@ export default function App() {
   const setTool = (id: string, change: Partial<ToolPreset>) =>
     setDraft(current => ({ ...current, tools: { ...current.tools, [id]: { ...current.tools[id], ...change } } }))
   const save = () => run(() => api.savePresets(draft, baseRevision ?? status.document!.revision), true, 'Saved to all computers')
+  if (view !== 'settings' && dirty && !busy && !remoteChanged) shortcut.current = save
   const discard = () => { setDraft(saved); setBaseRevision(status.document?.revision ?? null) }
   const edits = skillEdits(status, setDraft)
 
@@ -110,12 +125,13 @@ export default function App() {
       <main className="main">
         {message && <p className={`toast ${message.tone}`} role={message.tone === 'error' ? 'alert' : 'status'}>{message.text}</p>}
         {status.error && <p className="banner error">{status.error}</p>}
+        {status.warning && <p className="banner warn">{status.warning}</p>}
         {view === 'settings'
           ? <Settings status={status} busy={busy} dirty={dirty} run={run} />
           : !status.document
             ? <p className="lead">Waiting for the sync file…</p>
             : tool
-              ? <ToolView key={tool.id} tool={tool} status={status} draft={draft} edits={edits} onChange={change => setTool(tool.id, change)} onView={setView} />
+              ? <ToolView key={tool.id} tool={tool} status={status} draft={draft} edits={edits} busy={busy} run={run} onChange={change => setTool(tool.id, change)} onView={setView} />
               : view === 'skills'
                 ? <SkillsView status={status} draft={draft} edits={edits} />
                 : <SharedView status={status} draft={draft} onChange={shared => setDraft({ ...draft, shared })} />}
@@ -196,12 +212,13 @@ const stateText: Record<ToolStatus['state'], string> = {
   error: 'Needs attention',
 }
 
-function ToolView({ tool, status, draft, edits, onChange, onView }: { tool: ToolStatus; status: Status; draft: Presets; edits: SkillEdits; onChange: (change: Partial<ToolPreset>) => void; onView: (view: View) => void }) {
+function ToolView({ tool, status, draft, edits, busy, run, onChange, onView }: { tool: ToolStatus; status: Status; draft: Presets; edits: SkillEdits; busy: boolean; run: Run; onChange: (change: Partial<ToolPreset>) => void; onView: (view: View) => void }) {
   const preset = draft.tools[tool.id]
   const onMode = (mode: Mode) => onChange({ mode })
   const onText = (text: string) => onChange({ text })
   const onEditShared = () => onView('shared')
   const ownLabel = `${tool.name} only`
+  const keepFile = () => run(async () => { onChange(presetFromFile(draft.shared, await api.readToolInstructions(tool.id))) })
   return (
     <>
       <header className="page-header">
@@ -209,7 +226,10 @@ function ToolView({ tool, status, draft, edits, onChange, onView }: { tool: Tool
         <p className={`lead state-${tool.state}`}>{tool.state === 'error' ? tool.message : stateText[tool.state]}</p>
       </header>
 
-      {tool.editedOutside && <p className="banner warn">This file was changed outside Harness Sync. The next sync replaces it.</p>}
+      {tool.editedOutside && <div className="banner warn banner-action">
+        <span>This file was changed outside Harness Sync. Automatic syncs leave it alone; Sync now replaces it.</span>
+        <button className="small-button" disabled={busy} onClick={keepFile}>Keep this file's text</button>
+      </div>}
       {(tool.state === 'differs' || tool.editedOutside) && <Changes tool={tool} status={status} />}
       {!tool.installed && <p className="banner info">Your choice still applies on computers where {tool.name} is installed.</p>}
 
@@ -285,7 +305,7 @@ function SaveBar({ dirty, busy, remoteBy, onSave, onDiscard }: { dirty: boolean;
           : <span className="save-state">All changes saved</span>}
       <span className="save-actions">
         <button className="big secondary" disabled={!dirty || busy} onClick={onDiscard}>{remoteBy ? 'Load their version' : 'Discard'}</button>
-        <button className="big primary" disabled={!dirty || busy || remoteBy != null} onClick={onSave}>Save to all computers</button>
+        <button className="big primary" disabled={!dirty || busy || remoteBy != null} title={saveHint} onClick={onSave}>Save to all computers</button>
       </span>
     </div>
   )
@@ -295,9 +315,18 @@ function Settings({ status, busy, dirty, run }: { status: Status; busy: boolean;
   const [name, setName] = useState(status.deviceName)
   const [autostart, setAutostart] = useState<boolean | null>(null)
   const [picking, setPicking] = useState(false)
+  const [disconnecting, setDisconnecting] = useState(false)
   const sources = localSources(status)
   const summary = summarize(status)
   useEffect(() => { api.getAutostart().then(setAutostart).catch(() => setAutostart(null)) }, [])
+  const toggleAutostart = (enabled: boolean) => run(async () => {
+    try {
+      setAutostart(await api.setAutostart(enabled))
+    } catch (failure) {
+      setAutostart(await api.getAutostart().catch(() => !enabled))
+      throw failure
+    }
+  })
   useEffect(() => setName(status.deviceName), [status.deviceName])
   const conflicts = status.syncFile?.conflictCopies ?? []
   return (
@@ -314,10 +343,20 @@ function Settings({ status, busy, dirty, run }: { status: Status; busy: boolean;
 
       <section className="setting">
         <div className="setting-text"><h2>Sync file</h2><p className="mono">{status.syncFile?.path}</p></div>
-        <div className="setting-actions">
-          <button className="big secondary" disabled={busy} onClick={() => run(api.openSyncFile, true)}><FolderIcon size={20} />Choose another</button>
-          <button className="big secondary danger" disabled={busy} onClick={() => run(api.disconnect, true)}>Disconnect</button>
-        </div>
+        {!disconnecting &&
+          <div className="setting-actions">
+            <button className="big secondary" disabled={busy || dirty} onClick={() => run(api.openSyncFile, true)}><FolderIcon size={20} />Choose another</button>
+            <button className="big secondary danger" disabled={busy || dirty} onClick={() => setDisconnecting(true)}>Disconnect</button>
+          </div>}
+        {dirty && <p className="setting-note">Save or discard your changes first.</p>}
+        {disconnecting &&
+          <div className="setting-wide">
+            <p className="lead">Disconnect this computer?</p>
+            <div className="setting-actions">
+              <button className="big secondary danger" disabled={busy || dirty} onClick={() => { setDisconnecting(false); run(api.disconnect, true) }}>Confirm</button>
+              <button className="text-button" onClick={() => setDisconnecting(false)}>Cancel</button>
+            </div>
+          </div>}
       </section>
 
       {status.document &&
@@ -344,7 +383,7 @@ function Settings({ status, busy, dirty, run }: { status: Status; busy: boolean;
       {autostart !== null &&
         <label className="setting toggle-row">
           <span className="setting-text"><h2>Start when I sign in</h2><p>Keeps your tools synced without opening the app.</p></span>
-          <input type="checkbox" className="switch" checked={autostart} onChange={event => api.setAutostart(event.target.checked).then(setAutostart)} />
+          <input type="checkbox" className="switch" checked={autostart} disabled={busy} onChange={event => toggleAutostart(event.target.checked)} />
         </label>}
     </>
   )
@@ -357,6 +396,7 @@ function FirstRun({ status, busy, message, onCreate, onOpen }: { status: Status;
     <div className="center-screen">
       <div className="first-run">
         {message?.tone === 'error' && <p className="banner error">{message.text}</p>}
+        {status.warning && <p className="banner warn">{status.warning}</p>}
         {step === 'ask' ? <>
           <h1>One set of instructions. Every AI tool.</h1>
           <p className="lead">Is this your first computer?</p>
