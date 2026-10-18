@@ -5,7 +5,7 @@ mod skills;
 mod state;
 mod tools;
 
-use apply::{ToolState, ToolStatus};
+use apply::{ToolState, ToolStatus, Write};
 use document::{Presets, Skill, SyncDocument, ToolPreset};
 use serde::Serialize;
 use state::LocalState;
@@ -23,6 +23,7 @@ use tauri_plugin_notification::NotificationExt;
 use tools::Locations;
 
 const CHECK_INTERVAL: Duration = Duration::from_secs(5);
+const FULL_CHECK_TICKS: u32 = 12;
 const POPOVER_WIDTH: f64 = 340.0;
 const POPOVER_HEIGHT: f64 = 460.0;
 
@@ -39,6 +40,8 @@ struct App {
 #[derive(Default)]
 struct Runtime {
     last_error: Option<String>,
+    /// Why local settings were reset this session, if they could not be read.
+    state_warning: Option<String>,
     last_checked: Option<String>,
     /// A sync file the user picked but has not yet decided how to join.
     pending: Option<PathBuf>,
@@ -92,6 +95,7 @@ struct Status {
     sync_file: Option<SyncFile>,
     document: Option<DocumentView>,
     error: Option<String>,
+    warning: Option<String>,
     last_checked: Option<String>,
     pending: Option<PendingFile>,
     tools: Vec<ToolStatus>,
@@ -99,9 +103,18 @@ struct Status {
 }
 
 impl App {
+    /// Loads local settings, keeping any reset warning for the status. Caller holds the gate.
+    fn local(&self, runtime: &mut Runtime) -> LocalState {
+        let (local, warning) = LocalState::load(&self.state_path);
+        if warning.is_some() {
+            runtime.state_warning = warning;
+        }
+        local
+    }
+
     /// Reads the sync file and compares or applies it. Caller holds the gate.
-    fn refresh(&self, runtime: &mut Runtime, write: bool) -> Result<Status, String> {
-        let mut local = LocalState::load(&self.state_path);
+    fn refresh(&self, runtime: &mut Runtime, write: Write) -> Result<Status, String> {
+        let mut local = self.local(runtime);
         let loaded = local.sync_file.as_deref().map(document::load);
         let document = match &loaded {
             Some(Ok((document, _))) => Some(document),
@@ -113,7 +126,7 @@ impl App {
         };
         let tools = apply::run(document, &self.locations, &mut local, write);
         let skills = skills::run(document, &self.locations, &mut local, write);
-        if write {
+        if write != Write::Never {
             if let Some(Ok((_, hash))) = &loaded {
                 local.last_file_hash = Some(hash.clone());
             }
@@ -132,6 +145,7 @@ impl App {
             }),
             document: loaded.and_then(Result::ok).map(|(document, _)| document.into()),
             error: runtime.last_error.clone(),
+            warning: runtime.state_warning.clone(),
             last_checked: runtime.last_checked.clone(),
             pending: runtime.pending.as_deref().and_then(|path| {
                 let (document, _) = document::load(path).ok()?;
@@ -172,44 +186,70 @@ impl App {
     }
 
     fn connect(&self, runtime: &mut Runtime, path: PathBuf) -> Result<Status, String> {
-        let mut local = LocalState::load(&self.state_path);
+        let mut local = self.local(runtime);
         local.sync_file = Some(path);
         local.last_file_hash = None;
         local.save(&self.state_path)?;
-        self.refresh(runtime, true)
+        self.refresh(runtime, Write::Always)
     }
 
     /// Replaces the presets in `path` with this computer's instruction files.
-    fn use_this_computer(&self, path: &std::path::Path, seed: &str, expected_revision: Option<u64>) -> Result<(), String> {
+    fn use_this_computer(&self, runtime: &mut Runtime, path: &std::path::Path, seed: &str, expected_revision: Option<u64>) -> Result<(), String> {
         let (current, _) = document::load(path)?;
         let presets = apply::capture(&current, &self.locations, seed)?;
-        let device = LocalState::load(&self.state_path).device();
+        let device = self.local(runtime).device();
         document::save(path, expected_revision.unwrap_or(current.revision), presets, BTreeMap::new(), &device)?;
         Ok(())
     }
 }
 
-/// Polls the sync file and applies it whenever its bytes change.
+/// Size and modified time of the sync file, to skip reading it while unchanged.
+fn file_stamp(path: &std::path::Path) -> Option<(PathBuf, u64, std::time::SystemTime)> {
+    let metadata = std::fs::symlink_metadata(path).ok()?;
+    Some((path.to_path_buf(), metadata.len(), metadata.modified().ok()?))
+}
+
+/// Polls the sync file and applies it whenever its bytes change, keeping outside edits.
 fn background(app: AppHandle) {
     std::thread::spawn(move || {
         let mut first = true;
+        let mut tick: u32 = 0;
+        // Set only after a tick that ended without an error.
+        let mut stamp = None;
+        // The hash read last tick, so an invalid file is parsed once.
+        let mut tried: Option<String> = None;
         loop {
             let state = app.state::<App>();
             let result = state.with_gate(|runtime| {
-                let local = LocalState::load(&state.state_path);
+                let local = state.local(runtime);
                 let Some(path) = local.sync_file.clone() else {
+                    stamp = None;
                     return Ok(None);
                 };
-                let changed = match document::load(&path) {
-                    Ok((_, hash)) => first || local.last_file_hash.as_deref() != Some(&hash),
-                    Err(error) => runtime.last_error.as_deref() != Some(&error),
-                };
-                if !changed {
+                let current = file_stamp(&path);
+                // Some filesystems keep the modified time, so check fully about once a minute.
+                if tick % FULL_CHECK_TICKS != 0 && current.is_some() && current == stamp {
                     return Ok(None);
                 }
-                state.refresh(runtime, true).map(Some)
+                stamp = None;
+                let read = document::read_hash(&path);
+                let changed = match &read {
+                    Ok(hash) => {
+                        first
+                            || (tried.as_ref() != Some(hash)
+                                && (runtime.last_error.is_some() || local.last_file_hash.as_ref() != Some(hash)))
+                    }
+                    Err(error) => runtime.last_error.as_ref() != Some(error),
+                };
+                let status = if changed { Some(state.refresh(runtime, Write::KeepOutsideEdits)?) } else { None };
+                tried = read.ok();
+                if runtime.last_error.is_none() {
+                    stamp = current;
+                }
+                Ok(status)
             });
             first = false;
+            tick = tick.wrapping_add(1);
             if let Ok(Some(status)) = result {
                 notify_remote_update(&app, &status);
                 let _ = app.emit("status-changed", ());
@@ -252,12 +292,12 @@ fn notify_remote_update(app: &AppHandle, status: &Status) {
 
 #[tauri::command]
 fn get_status(app: State<'_, App>) -> Result<Status, String> {
-    app.with_gate(|runtime| app.refresh(runtime, false))
+    app.with_gate(|runtime| app.refresh(runtime, Write::Never))
 }
 
 #[tauri::command]
 fn apply_now(app: State<'_, App>) -> Result<Status, String> {
-    app.with_gate(|runtime| app.refresh(runtime, true))
+    app.with_gate(|runtime| app.refresh(runtime, Write::Always))
 }
 
 #[tauri::command]
@@ -296,7 +336,7 @@ async fn create_sync_file(
         None => String::new(),
     };
     app.with_gate(|runtime| {
-        let device = LocalState::load(&app.state_path).device();
+        let device = app.local(runtime).device();
         document::create(&path, shared, &device)?;
         app.connect(runtime, path).map(Some)
     })
@@ -323,7 +363,7 @@ async fn open_sync_file(handle: AppHandle) -> Result<Option<Status>, String> {
     let app = handle.state::<App>();
     app.with_gate(|runtime| {
         runtime.pending = Some(path);
-        app.refresh(runtime, false).map(Some)
+        app.refresh(runtime, Write::Never).map(Some)
     })
 }
 
@@ -334,7 +374,7 @@ fn join_sync_file(app: State<'_, App>, seed_tool: Option<String>) -> Result<Stat
     app.with_gate(|runtime| {
         let path = runtime.pending.clone().ok_or("Choose a sync file first")?;
         if let Some(seed) = seed_tool {
-            app.use_this_computer(&path, &seed, None)?;
+            app.use_this_computer(runtime, &path, &seed, None)?;
         }
         runtime.pending = None;
         app.connect(runtime, path)
@@ -345,7 +385,7 @@ fn join_sync_file(app: State<'_, App>, seed_tool: Option<String>) -> Result<Stat
 fn cancel_join(app: State<'_, App>) -> Result<Status, String> {
     app.with_gate(|runtime| {
         runtime.pending = None;
-        app.refresh(runtime, false)
+        app.refresh(runtime, Write::Never)
     })
 }
 
@@ -353,31 +393,31 @@ fn cancel_join(app: State<'_, App>) -> Result<Status, String> {
 #[tauri::command]
 fn use_this_computer(app: State<'_, App>, seed_tool: String, expected_revision: u64) -> Result<Status, String> {
     app.with_gate(|runtime| {
-        let path = LocalState::load(&app.state_path).sync_file.ok_or("Connect a sync file first")?;
-        app.use_this_computer(&path, &seed_tool, Some(expected_revision))?;
-        app.refresh(runtime, true)
+        let path = app.local(runtime).sync_file.ok_or("Connect a sync file first")?;
+        app.use_this_computer(runtime, &path, &seed_tool, Some(expected_revision))?;
+        app.refresh(runtime, Write::Always)
     })
 }
 
 #[tauri::command]
 fn disconnect(app: State<'_, App>) -> Result<Status, String> {
     app.with_gate(|runtime| {
-        let mut local = LocalState::load(&app.state_path);
+        let mut local = app.local(runtime);
         local.sync_file = None;
         local.last_file_hash = None;
         local.save(&app.state_path)?;
-        app.refresh(runtime, false)
+        app.refresh(runtime, Write::Never)
     })
 }
 
 #[tauri::command]
 fn save_presets(app: State<'_, App>, presets: Presets, expected_revision: u64) -> Result<Status, String> {
     app.with_gate(|runtime| {
-        let local = LocalState::load(&app.state_path);
+        let local = app.local(runtime);
         let path = local.sync_file.clone().ok_or("Connect a sync file first")?;
         let uploads = app.read_skill_sources(&presets)?;
         document::save(&path, expected_revision, presets, uploads, &local.device())?;
-        app.refresh(runtime, true)
+        app.refresh(runtime, Write::Always)
     })
 }
 
@@ -388,10 +428,10 @@ fn set_device_name(app: State<'_, App>, name: String) -> Result<Status, String> 
         return Err("Use a name between 1 and 64 characters".into());
     }
     app.with_gate(|runtime| {
-        let mut local = LocalState::load(&app.state_path);
+        let mut local = app.local(runtime);
         local.device_name = Some(name.to_owned());
         local.save(&app.state_path)?;
-        app.refresh(runtime, false)
+        app.refresh(runtime, Write::Never)
     })
 }
 
