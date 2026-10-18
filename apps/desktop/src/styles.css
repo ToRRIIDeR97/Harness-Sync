@@ -144,6 +144,11 @@ button:disabled { cursor: default; opacity: 0.45; }
 .shared-preview { margin: 0; padding: 14px 20px; max-height: 40vh; overflow: auto; font-family: var(--mono); font-size: 15px; line-height: 1.8; white-space: pre-wrap; color: var(--muted); }
 .composed .own-editor { border: 0; border-radius: 0; background: var(--own-panel); min-height: 180px; }
 .composed .shared-preview:last-child { flex: 1 0 auto; max-height: none; }
+.changes { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.diff { align-self: stretch; margin: 0; padding: 14px 0; max-height: 40vh; overflow: auto; border: 2px solid var(--border); border-radius: 16px; background: var(--surface); font-family: var(--mono); font-size: 14px; line-height: 1.7; white-space: pre-wrap; }
+.diff span { display: block; padding: 0 20px; }
+.diff .added { background: var(--ok-soft); color: var(--ok-text); }
+.diff .removed { background: var(--error-soft); color: var(--error); }
 .empty-panel { flex: 1; display: flex; align-items: center; justify-content: center; border: 2px dashed var(--border); border-radius: 16px; color: var(--subtle); font-size: 17px; padding: 24px; text-align: center; }
 
 .save-bar { position: sticky; bottom: -28px; display: flex; align-items: center; gap: 12px; margin-bottom: -28px; padding: 12px 0 28px; background: var(--bg); flex-wrap: wrap; z-index: 1; }
