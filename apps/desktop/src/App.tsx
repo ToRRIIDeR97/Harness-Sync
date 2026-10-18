@@ -267,6 +267,14 @@ function Settings({ status, busy, dirty, run }: { status: Status; busy: boolean;
   const sources = localSources(status)
   const summary = summarize(status)
   useEffect(() => { api.getAutostart().then(setAutostart).catch(() => setAutostart(null)) }, [])
+  const toggleAutostart = (enabled: boolean) => run(async () => {
+    try {
+      setAutostart(await api.setAutostart(enabled))
+    } catch (failure) {
+      setAutostart(await api.getAutostart().catch(() => !enabled))
+      throw failure
+    }
+  })
   useEffect(() => setName(status.deviceName), [status.deviceName])
   const conflicts = status.syncFile?.conflictCopies ?? []
   return (
@@ -313,7 +321,7 @@ function Settings({ status, busy, dirty, run }: { status: Status; busy: boolean;
       {autostart !== null &&
         <label className="setting toggle-row">
           <span className="setting-text"><h2>Start when I sign in</h2><p>Keeps your tools synced without opening the app.</p></span>
-          <input type="checkbox" className="switch" checked={autostart} onChange={event => api.setAutostart(event.target.checked).then(setAutostart)} />
+          <input type="checkbox" className="switch" checked={autostart} disabled={busy} onChange={event => toggleAutostart(event.target.checked)} />
         </label>}
     </>
   )
