@@ -12,7 +12,7 @@ Instruction and skill text is not screened for secrets. Do not put credentials i
 
 ## Writing tool files
 
-Replaced files are not backed up, so an outside edit is lost on the next sync; the app warns when a file was edited outside it. Writes are atomic. Symlinked or oversized files, unknown tools and malformed or newer-version sync files are refused. An empty preset never blanks a file.
+Replaced files are not backed up, so an outside edit is lost on the next sync; the app warns when a file was edited outside it and can copy that file's text into the unsaved draft so it is kept. Writes are atomic. Symlinked or oversized files, unknown tools and malformed or newer-version sync files are refused. An empty preset never blanks a file.
 
 Skill names and file paths from the sync file are validated before any write so they cannot leave the tool's skills folder (no `..`, absolute, hidden or drive-prefixed parts). Replacing a synced skill removes extra files in that skill's folder only; hidden entries and Python caches are never read, synced or removed. When a skill leaves a tool's set, a copy is deleted only if Harness Sync created or replaced it and it is byte-identical to what was last applied. The folder a skill was shared from is never deleted. Skills outside a tool's set are never written or deleted. The UI never sends file paths or contents. It names skills and tools, and Rust reads only `<tool skills folder>/<valid skill name>`.
 

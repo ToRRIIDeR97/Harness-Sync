@@ -154,6 +154,7 @@ button:disabled { cursor: default; opacity: 0.45; }
 .banner.error { background: var(--error-soft); color: var(--error); }
 .banner.warn { background: var(--warn-soft); color: var(--warn); }
 .banner.info { background: var(--accent-soft); color: var(--accent-soft-text); }
+.banner-action { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .toast { position: absolute; top: 20px; right: 32px; z-index: 2; padding: 12px 18px; border-radius: 12px; font-weight: 600; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.12); }
 .toast.ok { background: var(--ok); color: #ffffff; }
 .toast.error { position: static; background: var(--error-soft); color: var(--error); box-shadow: none; }
