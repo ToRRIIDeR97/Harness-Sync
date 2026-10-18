@@ -3,6 +3,8 @@ import type { Mode, Presets, Status, ToolPreset } from './api'
 export type Tone = 'ok' | 'warn' | 'error' | 'idle'
 export type Summary = { tone: Tone; title: string; detail: string }
 
+export const modes: Mode[] = ['shared', 'append', 'custom', 'off']
+
 export const modeLabels: Record<Mode, string> = {
   shared: 'Shared',
   append: 'Shared + extra',
