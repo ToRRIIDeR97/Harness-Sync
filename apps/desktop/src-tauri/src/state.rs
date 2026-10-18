@@ -32,12 +32,24 @@ pub fn default_device_name() -> String {
 }
 
 impl LocalState {
-    pub fn load(path: &Path) -> Self {
-        fsutil::read_text(path)
-            .ok()
-            .flatten()
-            .and_then(|content| serde_json::from_str(&content).ok())
-            .unwrap_or_default()
+    /// Loads local settings. An unreadable file is moved aside and reported, so it is never overwritten.
+    pub fn load(path: &Path) -> (Self, Option<String>) {
+        let parsed = fsutil::read_text(path)
+            .and_then(|content| content.map(|text| serde_json::from_str(&text).map_err(|error| error.to_string())).transpose());
+        let error = match parsed {
+            Ok(state) => return (state.unwrap_or_default(), None),
+            Err(error) => error,
+        };
+        let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+        let aside = path.with_file_name(format!("{name}.unreadable-{}", fsutil::now_seconds()));
+        let warning = match std::fs::rename(path, &aside) {
+            Ok(()) => format!(
+                "Local settings could not be read and were reset. The old copy is {}.",
+                aside.file_name().unwrap_or_default().to_string_lossy()
+            ),
+            Err(rename) => format!("Local settings could not be read ({error}) or moved aside ({rename}) and were reset."),
+        };
+        (Self::default(), Some(warning))
     }
 
     pub fn save(&self, path: &Path) -> Result<(), String> {
@@ -47,5 +59,26 @@ impl LocalState {
 
     pub fn device(&self) -> String {
         self.device_name.clone().unwrap_or_else(default_device_name)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unreadable_state_is_moved_aside_and_reported() {
+        let dir = fsutil::temp_dir("state");
+        let path = dir.join("state.json");
+        assert!(LocalState::load(&path).1.is_none());
+        std::fs::write(&path, "{ not json").unwrap();
+        let (state, warning) = LocalState::load(&path);
+        assert!(state.sync_file.is_none());
+        let warning = warning.unwrap();
+        assert!(!path.exists());
+        let moved: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|entry| entry.unwrap().file_name().into_string().unwrap()).collect();
+        assert_eq!(moved.len(), 1);
+        assert!(moved[0].starts_with("state.json.unreadable-") && warning.contains(&moved[0]));
+        assert_eq!(std::fs::read_to_string(dir.join(&moved[0])).unwrap(), "{ not json");
     }
 }

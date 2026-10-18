@@ -38,6 +38,7 @@ export type Status = {
   syncFile: { path: string; name: string; conflictCopies: string[] } | null
   document: SyncDocument | null
   error: string | null
+  warning: string | null
   lastChecked: string | null
   pending: { name: string; updatedBy: string; updatedAt: string } | null
   tools: ToolStatus[]
