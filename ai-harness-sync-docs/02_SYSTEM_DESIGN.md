@@ -66,7 +66,7 @@ Opening an existing file only stages it. The user then joins with either the fil
 
 ## Background behavior
 
-A worker applies once at launch, then checks the sync file every 5 seconds and applies when its bytes change. Tool files are not rewritten between file changes; differences are reported as outside edits until the next change or Sync now. A mutex serializes the worker with all commands. A notification reports presets applied from another computer.
+A worker applies once at launch, then checks the sync file's size and modified time every 5 seconds, hashes its bytes when they change and at least once a minute, and parses and applies it only when the hash changes. Tool files are not rewritten between file changes; differences are reported as outside edits until the next change or Sync now. A mutex serializes the worker with all commands. A notification reports presets applied from another computer.
 
 Left-clicking the tray icon toggles a small undecorated `tray` window (`index.html#tray`) beside the icon; it hides when it loses focus. Right-click keeps the Open and Quit menu.
 
