@@ -2,10 +2,21 @@ import { useState } from 'react'
 import type { LocalSkill, Mode, Presets, Status, ToolPreset, ToolStatus } from './api'
 import HarnessLogo from './HarnessLogo'
 import { PlusIcon } from './icons'
-import { listNames, modeLabels } from './summary'
+import { listNames, modeLabels, modes } from './summary'
 
-const modes: Mode[] = ['shared', 'append', 'custom', 'off']
 const dragType = 'application/x-harness-skill'
+
+export function ModePicker({ value, label, onChange }: { value: Mode; label: string; onChange: (mode: Mode) => void }) {
+  return (
+    <div className="mode-picker" role="radiogroup" aria-label={label}>
+      {modes.map(mode => (
+        <button key={mode} role="radio" aria-checked={value === mode} className={value === mode ? 'chosen' : ''} onClick={() => onChange(mode)}>
+          {modeLabels[mode]}
+        </button>
+      ))}
+    </div>
+  )
+}
 
 type SkillInfo = { name: string; description: string; files: number }
 
@@ -169,13 +180,7 @@ export function ToolSkills({ tool, status, draft, preset, onMode, edits, onEditS
   return (
     <section className="tool-skills">
       <h2 className="list-heading">Skills</h2>
-      <div className="mode-picker" role="radiogroup" aria-label={`Which skills ${tool.name} gets`}>
-        {modes.map(mode => (
-          <button key={mode} role="radio" aria-checked={preset.skillMode === mode} className={preset.skillMode === mode ? 'chosen' : ''} onClick={() => onMode(mode)}>
-            {modeLabels[mode]}
-          </button>
-        ))}
-      </div>
+      <ModePicker value={preset.skillMode} label={`Which skills ${tool.name} gets`} onChange={onMode} />
       {preset.skillMode === 'off'
         ? <div className="empty-panel small"><p>{tool.name}'s skills folder is not changed by Harness Sync.</p></div>
         : <>

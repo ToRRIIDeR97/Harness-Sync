@@ -73,7 +73,7 @@ pub fn run(
             status.exists = current.is_some();
             status.lines = current
                 .as_deref()
-                .map(|text| text.lines().filter(|line| !line.trim().is_empty()).count())
+                .map(line_count)
                 .unwrap_or_default();
             let Some(document) = document else {
                 return status;
@@ -112,7 +112,7 @@ pub fn run(
                     status.state = ToolState::Updated;
                     status.exists = true;
                     status.edited_outside = false;
-                    status.lines = rendered.lines().filter(|line| !line.trim().is_empty()).count();
+                    status.lines = line_count(&rendered);
                     state.applied.insert(tool.id.into(), fsutil::hash(rendered.as_bytes()));
                 }
                 Err(error) => {
@@ -163,6 +163,10 @@ pub fn capture(document: &SyncDocument, locations: &Locations, seed: &str) -> Re
         shared_skills: document.shared_skills.clone(),
         skill_sources: BTreeMap::new(),
     })
+}
+
+fn line_count(text: &str) -> usize {
+    text.lines().filter(|line| !line.trim().is_empty()).count()
 }
 
 #[cfg(test)]

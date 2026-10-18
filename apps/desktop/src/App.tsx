@@ -2,13 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, hasNative, type Mode, type Presets, type Status, type ToolPreset, type ToolStatus } from './api'
 import HarnessLogo from './HarnessLogo'
 import { BackIcon, CloudIcon, ComputerIcon, FolderIcon, GearIcon, LinesIcon, PlusIcon, SkillsIcon, SyncIcon, ToneIcon } from './icons'
-import { skillEdits, SkillsView, ToolSkills, type SkillEdits } from './Skills'
+import { ModePicker, skillEdits, SkillsView, ToolSkills, type SkillEdits } from './Skills'
 import { listNames, modeLabels, shortTime, summarize } from './summary'
 
 type View = 'shared' | 'skills' | 'settings' | string
 type Run = (work: () => Promise<Status | null | void>, force?: boolean, success?: string) => Promise<void>
-
-const modes: Mode[] = ['shared', 'append', 'custom', 'off']
 
 function presetsFrom(status: Status | null): Presets {
   const tools: Record<string, ToolPreset> = {}
@@ -212,13 +210,7 @@ function ToolView({ tool, status, draft, edits, onChange, onView }: { tool: Tool
       {!tool.installed && <p className="banner info">Your choice still applies on computers where {tool.name} is installed.</p>}
 
       <h2 className="list-heading">Instructions</h2>
-      <div className="mode-picker" role="radiogroup" aria-label={`Which instructions ${tool.name} gets`}>
-        {modes.map(mode => (
-          <button key={mode} role="radio" aria-checked={preset.mode === mode} className={preset.mode === mode ? 'chosen' : ''} onClick={() => onMode(mode)}>
-            {modeLabels[mode]}
-          </button>
-        ))}
-      </div>
+      <ModePicker value={preset.mode} label={`Which instructions ${tool.name} gets`} onChange={onMode} />
 
       {preset.mode === 'off'
         ? <div className="empty-panel"><p>{tool.name}'s instructions file is not changed by Harness Sync.</p></div>
