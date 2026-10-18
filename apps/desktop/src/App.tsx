@@ -264,6 +264,7 @@ function Settings({ status, busy, dirty, run }: { status: Status; busy: boolean;
   const [name, setName] = useState(status.deviceName)
   const [autostart, setAutostart] = useState<boolean | null>(null)
   const [picking, setPicking] = useState(false)
+  const [disconnecting, setDisconnecting] = useState(false)
   const sources = localSources(status)
   const summary = summarize(status)
   useEffect(() => { api.getAutostart().then(setAutostart).catch(() => setAutostart(null)) }, [])
@@ -291,10 +292,20 @@ function Settings({ status, busy, dirty, run }: { status: Status; busy: boolean;
 
       <section className="setting">
         <div className="setting-text"><h2>Sync file</h2><p className="mono">{status.syncFile?.path}</p></div>
-        <div className="setting-actions">
-          <button className="big secondary" disabled={busy} onClick={() => run(api.openSyncFile, true)}><FolderIcon size={20} />Choose another</button>
-          <button className="big secondary danger" disabled={busy} onClick={() => run(api.disconnect, true)}>Disconnect</button>
-        </div>
+        {!disconnecting &&
+          <div className="setting-actions">
+            <button className="big secondary" disabled={busy || dirty} onClick={() => run(api.openSyncFile, true)}><FolderIcon size={20} />Choose another</button>
+            <button className="big secondary danger" disabled={busy || dirty} onClick={() => setDisconnecting(true)}>Disconnect</button>
+          </div>}
+        {dirty && <p className="setting-note">Save or discard your changes first.</p>}
+        {disconnecting &&
+          <div className="setting-wide">
+            <p className="lead">Disconnect this computer?</p>
+            <div className="setting-actions">
+              <button className="big secondary danger" disabled={busy || dirty} onClick={() => { setDisconnecting(false); run(api.disconnect, true) }}>Confirm</button>
+              <button className="text-button" onClick={() => setDisconnecting(false)}>Cancel</button>
+            </div>
+          </div>}
       </section>
 
       {status.document &&
