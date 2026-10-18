@@ -21,6 +21,8 @@ function presetsFrom(status: Status | null): Presets {
 
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
 
+const saveHint = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘S' : 'Ctrl+S'
+
 /** Tools whose instructions on this computer can become the shared preset. */
 const localSources = (status: Status) => status.tools.filter(tool => tool.exists && tool.lines > 0 && tool.state !== 'error')
 
@@ -79,6 +81,18 @@ export default function App() {
     return () => clearTimeout(timer)
   }, [message])
 
+  const shortcut = useRef<(() => void) | null>(null)
+  shortcut.current = null
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 's') return
+      event.preventDefault()
+      shortcut.current?.()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
   if (!hasNative()) {
     return <div className="center-screen"><div className="first-run"><h1>Harness Sync</h1><p className="lead">Open the desktop app to manage your instructions.</p></div></div>
   }
@@ -100,6 +114,7 @@ export default function App() {
   const setTool = (id: string, change: Partial<ToolPreset>) =>
     setDraft(current => ({ ...current, tools: { ...current.tools, [id]: { ...current.tools[id], ...change } } }))
   const save = () => run(() => api.savePresets(draft, baseRevision ?? status.document!.revision), true, 'Saved to all computers')
+  if (view !== 'settings' && dirty && !busy && !remoteChanged) shortcut.current = save
   const discard = () => { setDraft(saved); setBaseRevision(status.document?.revision ?? null) }
   const edits = skillEdits(status, setDraft)
 
@@ -209,7 +224,7 @@ function ToolView({ tool, status, draft, edits, onChange, onView }: { tool: Tool
         <p className={`lead state-${tool.state}`}>{tool.state === 'error' ? tool.message : stateText[tool.state]}</p>
       </header>
 
-      {tool.editedOutside && <p className="banner warn">This file was changed outside Harness Sync. The next sync replaces it.</p>}
+      {tool.editedOutside && <p className="banner warn">This file was changed outside Harness Sync. Automatic syncs leave it alone; Sync now replaces it.</p>}
       {!tool.installed && <p className="banner info">Your choice still applies on computers where {tool.name} is installed.</p>}
 
       <h2 className="list-heading">Instructions</h2>
@@ -255,7 +270,7 @@ function SaveBar({ dirty, busy, remoteBy, onSave, onDiscard }: { dirty: boolean;
           : <span className="save-state">All changes saved</span>}
       <span className="save-actions">
         <button className="big secondary" disabled={!dirty || busy} onClick={onDiscard}>{remoteBy ? 'Load their version' : 'Discard'}</button>
-        <button className="big primary" disabled={!dirty || busy || remoteBy != null} onClick={onSave}>Save to all computers</button>
+        <button className="big primary" disabled={!dirty || busy || remoteBy != null} title={saveHint} onClick={onSave}>Save to all computers</button>
       </span>
     </div>
   )
@@ -265,9 +280,18 @@ function Settings({ status, busy, dirty, run }: { status: Status; busy: boolean;
   const [name, setName] = useState(status.deviceName)
   const [autostart, setAutostart] = useState<boolean | null>(null)
   const [picking, setPicking] = useState(false)
+  const [disconnecting, setDisconnecting] = useState(false)
   const sources = localSources(status)
   const summary = summarize(status)
   useEffect(() => { api.getAutostart().then(setAutostart).catch(() => setAutostart(null)) }, [])
+  const toggleAutostart = (enabled: boolean) => run(async () => {
+    try {
+      setAutostart(await api.setAutostart(enabled))
+    } catch (failure) {
+      setAutostart(await api.getAutostart().catch(() => !enabled))
+      throw failure
+    }
+  })
   useEffect(() => setName(status.deviceName), [status.deviceName])
   const conflicts = status.syncFile?.conflictCopies ?? []
   return (
@@ -284,10 +308,20 @@ function Settings({ status, busy, dirty, run }: { status: Status; busy: boolean;
 
       <section className="setting">
         <div className="setting-text"><h2>Sync file</h2><p className="mono">{status.syncFile?.path}</p></div>
-        <div className="setting-actions">
-          <button className="big secondary" disabled={busy} onClick={() => run(api.openSyncFile, true)}><FolderIcon size={20} />Choose another</button>
-          <button className="big secondary danger" disabled={busy} onClick={() => run(api.disconnect, true)}>Disconnect</button>
-        </div>
+        {!disconnecting &&
+          <div className="setting-actions">
+            <button className="big secondary" disabled={busy || dirty} onClick={() => run(api.openSyncFile, true)}><FolderIcon size={20} />Choose another</button>
+            <button className="big secondary danger" disabled={busy || dirty} onClick={() => setDisconnecting(true)}>Disconnect</button>
+          </div>}
+        {dirty && <p className="setting-note">Save or discard your changes first.</p>}
+        {disconnecting &&
+          <div className="setting-wide">
+            <p className="lead">Disconnect this computer?</p>
+            <div className="setting-actions">
+              <button className="big secondary danger" disabled={busy || dirty} onClick={() => { setDisconnecting(false); run(api.disconnect, true) }}>Confirm</button>
+              <button className="text-button" onClick={() => setDisconnecting(false)}>Cancel</button>
+            </div>
+          </div>}
       </section>
 
       {status.document &&
@@ -314,7 +348,7 @@ function Settings({ status, busy, dirty, run }: { status: Status; busy: boolean;
       {autostart !== null &&
         <label className="setting toggle-row">
           <span className="setting-text"><h2>Start when I sign in</h2><p>Keeps your tools synced without opening the app.</p></span>
-          <input type="checkbox" className="switch" checked={autostart} onChange={event => api.setAutostart(event.target.checked).then(setAutostart)} />
+          <input type="checkbox" className="switch" checked={autostart} disabled={busy} onChange={event => toggleAutostart(event.target.checked)} />
         </label>}
     </>
   )

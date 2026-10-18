@@ -50,7 +50,7 @@ Skills mirror instructions. `sharedSkills` is the shared set. Each tool's `skill
 
 Skill changes are part of the editor draft and are saved with `save_presets`. The draft's `skillSources` maps each skill to upload to the tool whose folder supplies it: a skill new to the file, or "Use this version" for a copy changed outside the app. `lib.rs` reads those folders, then `document::save` replaces library entries with the uploads, refuses a reference with no content and drops entries nothing references. The Status sent to the UI omits skill contents and carries a report: the library, plus each installed tool's folder with every local or wanted skill and its state.
 
-For every installed tool whose skill mode is not `off`, applying compares each wanted skill's hash with the local folder. A differing folder is made identical: files are written atomically and extra files removed, leaving ignored ones. A copy that changed since the last apply is reported as edited outside. When a skill leaves a tool's set, the copy is deleted only if Harness Sync created or replaced it (`writtenSkills`) and its hash still matches the last apply. Originals that were shared from that folder, and changed copies, are kept and no longer tracked. Skills outside a tool's set are listed but never written. Symlinked skill folders or files are refused.
+For every installed tool whose skill mode is not `off`, applying compares each wanted skill's hash with the local folder. A differing folder is made identical: files are written atomically and extra files removed, leaving ignored ones. A copy that changed since the last apply is reported as edited outside; automatic applies leave it alone. When a skill leaves a tool's set, the copy is deleted only if Harness Sync created or replaced it (`writtenSkills`) and its hash still matches the last apply. Originals that were shared from that folder, and changed copies, are kept and no longer tracked. Skills outside a tool's set are listed but never written. Symlinked skill folders or files are refused.
 
 The Skills page lists each installed tool's folder. Dragging a skill into **Shared skills** (HTML drag and drop, which needs `dragDropEnabled: false` on the window) or choosing **Share** adds it to the shared set. Each tool's page has a second mode picker for skills and a checklist for its extras.
 
@@ -58,7 +58,7 @@ The Skills page lists each installed tool's folder. Dragging a skill into **Shar
 
 The editor remembers the revision it loaded. `save_presets` rereads the file and refuses when the revision changed, then writes revision + 1 through a temporary sibling and rename, then applies locally.
 
-Applying compares each installed, managed tool's file with its rendered preset. A differing file is replaced atomically. No backup is kept. Empty presets, symlinks and non-regular files are never written.
+Applying compares each installed, managed tool's file with its rendered preset. A differing file is replaced atomically, except that automatic applies leave a file edited outside the app alone. No backup is kept. Empty presets, symlinks and non-regular files are never written.
 
 ## Making a computer the main one
 
@@ -66,7 +66,7 @@ Opening an existing file only stages it. The user then joins with either the fil
 
 ## Background behavior
 
-A worker applies once at launch, then checks the sync file every 5 seconds and applies when its bytes change. Tool files are not rewritten between file changes; differences are reported as outside edits until the next change or Sync now. A mutex serializes the worker with all commands. A notification reports presets applied from another computer.
+A worker applies once at launch, then checks the sync file's size and modified time every 5 seconds, hashes its bytes when they change and at least once a minute, and parses and applies it only when the hash changes. These automatic applies keep instruction files and skill copies edited outside the app and report them as differing; Sync now, saving presets, joining and "use this computer" replace them. Tool files are not rewritten between file changes; differences are reported as outside edits until the next change or Sync now. A mutex serializes the worker with all commands. A notification reports presets applied from another computer.
 
 Left-clicking the tray icon toggles a small undecorated `tray` window (`index.html#tray`) beside the icon; it hides when it loses focus. Right-click keeps the Open and Quit menu.
 

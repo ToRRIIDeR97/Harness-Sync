@@ -44,4 +44,4 @@ npm install
 npm run tauri dev
 ```
 
-Run `cargo test --lib` in `apps/desktop/src-tauri`. See the [documentation](ai-harness-sync-docs/00_README.md).
+Run `npm test` in `apps/desktop` for the Rust tests. See the [documentation](ai-harness-sync-docs/00_README.md).
