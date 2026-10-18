@@ -190,13 +190,13 @@ impl App {
     }
 }
 
-/// Polls the sync file and applies it whenever its bytes change.
 /// Size and modified time of the sync file, to skip reading it while unchanged.
 fn file_stamp(path: &std::path::Path) -> Option<(PathBuf, u64, std::time::SystemTime)> {
     let metadata = std::fs::symlink_metadata(path).ok()?;
     Some((path.to_path_buf(), metadata.len(), metadata.modified().ok()?))
 }
 
+/// Polls the sync file and applies it whenever its bytes change.
 fn background(app: AppHandle) {
     std::thread::spawn(move || {
         let mut first = true;
