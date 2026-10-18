@@ -22,7 +22,7 @@ Keep global AI instructions identical across Codex, Claude Code, OpenCode, Antig
 - Skills that were never added to the sync file. They are listed, never changed.
 - Threads, credentials, caches and harness databases.
 - GitHub or any other transport. Google Drive for desktop moves the file.
-- Copying outside edits back into presets. Outside edits are reported, then replaced on the next sync.
+- Copying outside edits back into presets. Outside edits are reported and left alone by automatic syncs, then replaced by Sync now or the next save.
 
 ## Acceptance
 

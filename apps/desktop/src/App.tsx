@@ -223,7 +223,7 @@ function ToolView({ tool, status, draft, edits, onChange, onView }: { tool: Tool
         <p className={`lead state-${tool.state}`}>{tool.state === 'error' ? tool.message : stateText[tool.state]}</p>
       </header>
 
-      {tool.editedOutside && <p className="banner warn">This file was changed outside Harness Sync. The next sync replaces it.</p>}
+      {tool.editedOutside && <p className="banner warn">This file was changed outside Harness Sync. Automatic syncs leave it alone; Sync now replaces it.</p>}
       {!tool.installed && <p className="banner info">Your choice still applies on computers where {tool.name} is installed.</p>}
 
       <h2 className="list-heading">Instructions</h2>

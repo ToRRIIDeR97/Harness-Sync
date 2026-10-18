@@ -5,7 +5,7 @@ mod skills;
 mod state;
 mod tools;
 
-use apply::{ToolState, ToolStatus};
+use apply::{ToolState, ToolStatus, Write};
 use document::{Presets, Skill, SyncDocument, ToolPreset};
 use serde::Serialize;
 use state::LocalState;
@@ -101,7 +101,7 @@ struct Status {
 
 impl App {
     /// Reads the sync file and compares or applies it. Caller holds the gate.
-    fn refresh(&self, runtime: &mut Runtime, write: bool) -> Result<Status, String> {
+    fn refresh(&self, runtime: &mut Runtime, write: Write) -> Result<Status, String> {
         let mut local = LocalState::load(&self.state_path);
         let loaded = local.sync_file.as_deref().map(document::load);
         let document = match &loaded {
@@ -114,7 +114,7 @@ impl App {
         };
         let tools = apply::run(document, &self.locations, &mut local, write);
         let skills = skills::run(document, &self.locations, &mut local, write);
-        if write {
+        if write != Write::Never {
             if let Some(Ok((_, hash))) = &loaded {
                 local.last_file_hash = Some(hash.clone());
             }
@@ -177,7 +177,7 @@ impl App {
         local.sync_file = Some(path);
         local.last_file_hash = None;
         local.save(&self.state_path)?;
-        self.refresh(runtime, true)
+        self.refresh(runtime, Write::Always)
     }
 
     /// Replaces the presets in `path` with this computer's instruction files.
@@ -196,7 +196,7 @@ fn file_stamp(path: &std::path::Path) -> Option<(PathBuf, u64, std::time::System
     Some((path.to_path_buf(), metadata.len(), metadata.modified().ok()?))
 }
 
-/// Polls the sync file and applies it whenever its bytes change.
+/// Polls the sync file and applies it whenever its bytes change, keeping outside edits.
 fn background(app: AppHandle) {
     std::thread::spawn(move || {
         let mut first = true;
@@ -228,7 +228,7 @@ fn background(app: AppHandle) {
                     }
                     Err(error) => runtime.last_error.as_ref() != Some(error),
                 };
-                let status = if changed { Some(state.refresh(runtime, true)?) } else { None };
+                let status = if changed { Some(state.refresh(runtime, Write::KeepOutsideEdits)?) } else { None };
                 tried = read.ok();
                 if runtime.last_error.is_none() {
                     stamp = current;
@@ -279,12 +279,12 @@ fn notify_remote_update(app: &AppHandle, status: &Status) {
 
 #[tauri::command]
 fn get_status(app: State<'_, App>) -> Result<Status, String> {
-    app.with_gate(|runtime| app.refresh(runtime, false))
+    app.with_gate(|runtime| app.refresh(runtime, Write::Never))
 }
 
 #[tauri::command]
 fn apply_now(app: State<'_, App>) -> Result<Status, String> {
-    app.with_gate(|runtime| app.refresh(runtime, true))
+    app.with_gate(|runtime| app.refresh(runtime, Write::Always))
 }
 
 #[tauri::command]
@@ -350,7 +350,7 @@ async fn open_sync_file(handle: AppHandle) -> Result<Option<Status>, String> {
     let app = handle.state::<App>();
     app.with_gate(|runtime| {
         runtime.pending = Some(path);
-        app.refresh(runtime, false).map(Some)
+        app.refresh(runtime, Write::Never).map(Some)
     })
 }
 
@@ -372,7 +372,7 @@ fn join_sync_file(app: State<'_, App>, seed_tool: Option<String>) -> Result<Stat
 fn cancel_join(app: State<'_, App>) -> Result<Status, String> {
     app.with_gate(|runtime| {
         runtime.pending = None;
-        app.refresh(runtime, false)
+        app.refresh(runtime, Write::Never)
     })
 }
 
@@ -382,7 +382,7 @@ fn use_this_computer(app: State<'_, App>, seed_tool: String, expected_revision: 
     app.with_gate(|runtime| {
         let path = LocalState::load(&app.state_path).sync_file.ok_or("Connect a sync file first")?;
         app.use_this_computer(&path, &seed_tool, Some(expected_revision))?;
-        app.refresh(runtime, true)
+        app.refresh(runtime, Write::Always)
     })
 }
 
@@ -393,7 +393,7 @@ fn disconnect(app: State<'_, App>) -> Result<Status, String> {
         local.sync_file = None;
         local.last_file_hash = None;
         local.save(&app.state_path)?;
-        app.refresh(runtime, false)
+        app.refresh(runtime, Write::Never)
     })
 }
 
@@ -404,7 +404,7 @@ fn save_presets(app: State<'_, App>, presets: Presets, expected_revision: u64) -
         let path = local.sync_file.clone().ok_or("Connect a sync file first")?;
         let uploads = app.read_skill_sources(&presets)?;
         document::save(&path, expected_revision, presets, uploads, &local.device())?;
-        app.refresh(runtime, true)
+        app.refresh(runtime, Write::Always)
     })
 }
 
@@ -418,7 +418,7 @@ fn set_device_name(app: State<'_, App>, name: String) -> Result<Status, String> 
         let mut local = LocalState::load(&app.state_path);
         local.device_name = Some(name.to_owned());
         local.save(&app.state_path)?;
-        app.refresh(runtime, false)
+        app.refresh(runtime, Write::Never)
     })
 }
 
