@@ -1,4 +1,4 @@
-import type { Mode, Status } from './api'
+import type { Mode, Presets, Status, ToolPreset } from './api'
 
 export type Tone = 'ok' | 'warn' | 'error' | 'idle'
 export type Summary = { tone: Tone; title: string; detail: string }
@@ -43,4 +43,22 @@ export function summarize(status: Status | null): Summary {
   if (outside.length) return { tone: 'warn', title: 'Changed outside the app', detail: listNames(outside) }
   if (status.tools.some(tool => tool.state === 'differs') || skills.some(skill => skill.state === 'differs')) return { tone: 'warn', title: 'Waiting to sync', detail: 'Choose Sync now to update' }
   return { tone: 'ok', title: 'All synced', detail: `Updated ${shortTime(status.document?.updatedAt)}` }
+}
+
+export const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
+
+/** Three-way merge of unsaved edits onto a newer saved version. `conflicts` lists 'shared', 'sharedSkills' or tool ids changed on both sides. */
+export function mergePresets(base: Presets, mine: Presets, theirs: Presets) {
+  const conflicts: string[] = []
+  const pick = <T>(key: string, b: T, m: T, t: T): T => {
+    if (same(m, b) || same(m, t)) return t
+    if (same(t, b)) return m
+    conflicts.push(key)
+    return m
+  }
+  const shared = pick('shared', base.shared, mine.shared, theirs.shared)
+  const tools: Record<string, ToolPreset> = {}
+  for (const id of new Set([...Object.keys(mine.tools), ...Object.keys(theirs.tools)])) tools[id] = pick(id, base.tools[id], mine.tools[id], theirs.tools[id])
+  const sharedSkills = pick('sharedSkills', base.sharedSkills, mine.sharedSkills, theirs.sharedSkills)
+  return { merged: { shared, tools, sharedSkills, skillSources: mine.skillSources }, conflicts }
 }
