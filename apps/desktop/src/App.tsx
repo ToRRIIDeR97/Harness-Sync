@@ -3,7 +3,7 @@ import { api, hasNative, type Mode, type Presets, type Status, type ToolPreset, 
 import HarnessLogo from './HarnessLogo'
 import { BackIcon, CloudIcon, ComputerIcon, FolderIcon, GearIcon, LinesIcon, PlusIcon, SkillsIcon, SyncIcon, ToneIcon } from './icons'
 import { skillEdits, SkillsView, ToolSkills, type SkillEdits } from './Skills'
-import { listNames, modeLabels, shortTime, summarize } from './summary'
+import { listNames, modeLabels, presetFromFile, shortTime, summarize } from './summary'
 
 type View = 'shared' | 'skills' | 'settings' | string
 type Run = (work: () => Promise<Status | null | void>, force?: boolean, success?: string) => Promise<void>
@@ -130,7 +130,7 @@ export default function App() {
           : !status.document
             ? <p className="lead">Waiting for the sync file…</p>
             : tool
-              ? <ToolView tool={tool} status={status} draft={draft} edits={edits} onChange={change => setTool(tool.id, change)} onView={setView} />
+              ? <ToolView tool={tool} status={status} draft={draft} edits={edits} busy={busy} run={run} onChange={change => setTool(tool.id, change)} onView={setView} />
               : view === 'skills'
                 ? <SkillsView status={status} draft={draft} edits={edits} />
                 : <SharedView status={status} draft={draft} onChange={shared => setDraft({ ...draft, shared })} />}
@@ -211,12 +211,13 @@ const stateText: Record<ToolStatus['state'], string> = {
   error: 'Needs attention',
 }
 
-function ToolView({ tool, status, draft, edits, onChange, onView }: { tool: ToolStatus; status: Status; draft: Presets; edits: SkillEdits; onChange: (change: Partial<ToolPreset>) => void; onView: (view: View) => void }) {
+function ToolView({ tool, status, draft, edits, busy, run, onChange, onView }: { tool: ToolStatus; status: Status; draft: Presets; edits: SkillEdits; busy: boolean; run: Run; onChange: (change: Partial<ToolPreset>) => void; onView: (view: View) => void }) {
   const preset = draft.tools[tool.id]
   const onMode = (mode: Mode) => onChange({ mode })
   const onText = (text: string) => onChange({ text })
   const onEditShared = () => onView('shared')
   const ownLabel = `${tool.name} only`
+  const keepFile = () => run(async () => { onChange(presetFromFile(draft.shared, await api.readToolInstructions(tool.id))) })
   return (
     <>
       <header className="page-header">
@@ -224,7 +225,10 @@ function ToolView({ tool, status, draft, edits, onChange, onView }: { tool: Tool
         <p className={`lead state-${tool.state}`}>{tool.state === 'error' ? tool.message : stateText[tool.state]}</p>
       </header>
 
-      {tool.editedOutside && <p className="banner warn">This file was changed outside Harness Sync. Automatic syncs leave it alone; Sync now replaces it.</p>}
+      {tool.editedOutside && <div className="banner warn banner-action">
+        <span>This file was changed outside Harness Sync. Automatic syncs leave it alone; Sync now replaces it.</span>
+        <button className="small-button" disabled={busy} onClick={keepFile}>Keep this file's text</button>
+      </div>}
       {!tool.installed && <p className="banner info">Your choice still applies on computers where {tool.name} is installed.</p>}
 
       <h2 className="list-heading">Instructions</h2>
