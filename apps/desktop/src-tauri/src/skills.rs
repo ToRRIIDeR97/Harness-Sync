@@ -1,3 +1,4 @@
+use crate::apply::Write;
 use crate::document::{Skill, SyncDocument};
 use crate::fsutil;
 use crate::state::LocalState;
@@ -14,7 +15,7 @@ const ENTRY_FILE: &str = "SKILL.md";
 #[serde(rename_all = "camelCase")]
 pub enum SkillState {
     InSync,
-    /// The tool's copy differs and will be replaced on the next apply.
+    /// The tool's copy differs and will be replaced on the next apply, or on Sync now if edited outside.
     Differs,
     Updated,
     Error,
@@ -241,13 +242,14 @@ fn local(name: &str, skill: Option<&Skill>, wanted: bool, state: SkillState, mes
     }
 }
 
-/// Compares every installed tool's skills folder with its skill set. With `write`, replaces
-/// differing copies and deletes unchanged copies Harness Sync wrote that left the set.
+/// Compares every installed tool's skills folder with its skill set. Unless `write_files` is
+/// `Never`, replaces differing copies as it allows and deletes unchanged copies Harness Sync wrote
+/// that left the set.
 pub fn run(
     document: Option<&SyncDocument>,
     locations: &Locations,
     state: &mut LocalState,
-    write_files: bool,
+    write_files: Write,
 ) -> SkillsReport {
     let library = document
         .map(|doc| {
@@ -297,7 +299,8 @@ pub fn run(
                 entry.edited_outside = current_hash.is_some()
                     && state.applied_skills.get(&key).is_some_and(|applied| Some(applied) != current_hash.as_ref());
                 entry.state = SkillState::Differs;
-                if write_files {
+                let keep = write_files == Write::KeepOutsideEdits && entry.edited_outside;
+                if write_files != Write::Never && !keep {
                     match write(&target, skill) {
                         Ok(()) => {
                             entry.state = SkillState::Updated;
@@ -318,7 +321,7 @@ pub fn run(
         }
 
         // Skills that left this tool's set: delete unchanged copies Harness Sync wrote, forget the rest.
-        if let (Some(set), true) = (&wanted, write_files) {
+        if let (Some(set), true) = (&wanted, write_files != Write::Never) {
             let prefix = format!("{}/", tool.id);
             let gone: Vec<(String, String)> = state
                 .applied_skills
@@ -416,7 +419,7 @@ mod tests {
         fs::write(source.join("stray.pyc"), [0xffu8]).unwrap();
 
         let created = document::create(&drive, "Rules".into(), "desk").unwrap();
-        let listed = run(Some(&created), &desk, &mut desk_state, false);
+        let listed = run(Some(&created), &desk, &mut desk_state, Write::Never);
         let found = find(&listed, "claude", "review").unwrap();
         assert_eq!((found.state, found.wanted), (SkillState::Local, false));
         assert_eq!(found.description, "Reviews code");
@@ -425,7 +428,7 @@ mod tests {
         let local = read(&source).unwrap().unwrap();
         assert_eq!(local.files.len(), 2);
         let saved = share(&drive, created.revision, &["review"], [("review".to_string(), local.clone())].into(), BTreeMap::new());
-        let report = run(Some(&saved), &desk, &mut desk_state, true);
+        let report = run(Some(&saved), &desk, &mut desk_state, Write::Always);
         assert_eq!(report.library.len(), 1);
         assert_eq!(state_of(&report, "claude", "review"), Some(SkillState::InSync));
         assert_eq!(state_of(&report, "codex", "review"), Some(SkillState::Updated));
@@ -437,24 +440,24 @@ mod tests {
         fs::create_dir_all(&mine).unwrap();
         fs::write(mine.join("SKILL.md"), "mine").unwrap();
         let (from_drive, _) = document::load(&drive).unwrap();
-        run(Some(&from_drive), &laptop, &mut laptop_state, true);
+        run(Some(&from_drive), &laptop, &mut laptop_state, Write::Always);
         assert_eq!(read(&laptop.skills_dir("opencode").join("review")).unwrap().unwrap(), local);
 
         // An outside edit is reported, then replaced, including extra files.
         let target = laptop.skills_dir("opencode").join("review");
         fs::write(target.join("extra.md"), "extra").unwrap();
-        let checked = run(Some(&from_drive), &laptop, &mut laptop_state, false);
+        let checked = run(Some(&from_drive), &laptop, &mut laptop_state, Write::Never);
         let found = find(&checked, "opencode", "review").unwrap();
         assert_eq!(found.state, SkillState::Differs);
         assert!(found.edited_outside);
-        run(Some(&from_drive), &laptop, &mut laptop_state, true);
+        run(Some(&from_drive), &laptop, &mut laptop_state, Write::Always);
         assert!(!target.join("extra.md").exists());
 
         // Unsharing deletes unchanged copies Harness Sync wrote, keeps edited ones and the original.
         fs::write(desk.skills_dir("codex").join("review/SKILL.md"), "edited").unwrap();
         let removed = share(&drive, saved.revision, &[], BTreeMap::new(), BTreeMap::new());
-        run(Some(&removed), &laptop, &mut laptop_state, true);
-        let report = run(Some(&removed), &desk, &mut desk_state, true);
+        run(Some(&removed), &laptop, &mut laptop_state, Write::Always);
+        let report = run(Some(&removed), &desk, &mut desk_state, Write::Always);
         assert!(!target.exists());
         assert!(source.join("SKILL.md").exists());
         assert_eq!(state_of(&report, "claude", "review"), Some(SkillState::Local));
@@ -462,6 +465,28 @@ mod tests {
         assert!(mine.join("SKILL.md").exists());
         assert!(desk_state.applied_skills.is_empty());
         assert!(desk_state.written_skills.is_empty());
+    }
+
+    #[test]
+    fn automatic_apply_keeps_edited_skills() {
+        let drive = fsutil::temp_dir("skills-keep").join("harness-sync.json");
+        let (desk, mut state) = machine("skills-keep-desk", &["claude", "codex"]);
+        let created = document::create(&drive, "Rules".into(), "desk").unwrap();
+        let saved = share(&drive, created.revision, &["tip"], [("tip".to_string(), skill(&[("SKILL.md", "tip")]))].into(), BTreeMap::new());
+        run(Some(&saved), &desk, &mut state, Write::Always);
+        let edited = desk.skills_dir("codex").join("tip/SKILL.md");
+        fs::write(&edited, "mine").unwrap();
+        let newer = share(&drive, saved.revision, &["tip"], [("tip".to_string(), skill(&[("SKILL.md", "tip v2")]))].into(), BTreeMap::new());
+
+        let auto = run(Some(&newer), &desk, &mut state, Write::KeepOutsideEdits);
+        let found = find(&auto, "codex", "tip").unwrap();
+        assert_eq!((found.state, found.edited_outside), (SkillState::Differs, true));
+        assert_eq!(fs::read_to_string(&edited).unwrap(), "mine");
+        assert_eq!(state_of(&auto, "claude", "tip"), Some(SkillState::Updated));
+
+        let explicit = run(Some(&newer), &desk, &mut state, Write::Always);
+        assert_eq!(state_of(&explicit, "codex", "tip"), Some(SkillState::Updated));
+        assert_eq!(fs::read_to_string(&edited).unwrap(), "tip v2");
     }
 
     #[test]
@@ -476,7 +501,7 @@ mod tests {
         tools.insert("codex".into(), document::ToolPreset { skill_mode: document::Mode::Off, ..Default::default() });
         let uploads = [("base".to_string(), skill(&[("SKILL.md", "base")])), ("extra".to_string(), skill(&[("SKILL.md", "extra")]))].into();
         let saved = share(&drive, created.revision, &["base"], uploads, tools);
-        let report = run(Some(&saved), &desk, &mut state, true);
+        let report = run(Some(&saved), &desk, &mut state, Write::Always);
         assert_eq!(state_of(&report, "claude", "base"), Some(SkillState::Updated));
         assert_eq!(state_of(&report, "claude", "extra"), Some(SkillState::Updated));
         assert_eq!(state_of(&report, "opencode", "base"), None);
@@ -501,7 +526,7 @@ mod tests {
             fs::create_dir_all(desk.skills_dir("claude")).unwrap();
             std::os::unix::fs::symlink(&elsewhere, desk.skills_dir("claude").join("tip")).unwrap();
         }
-        let report = run(Some(&saved), &desk, &mut state, true);
+        let report = run(Some(&saved), &desk, &mut state, Write::Always);
         assert_eq!(state_of(&report, "codex", "tip"), None);
         assert!(!desk.skills_dir("codex").join("tip").exists());
         #[cfg(unix)]

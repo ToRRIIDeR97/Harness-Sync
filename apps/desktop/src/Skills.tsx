@@ -147,7 +147,7 @@ function SkillRow({ skill, tool, toolName, draft, edits }: { skill: LocalSkill; 
       </span>
       {skill.description && <span className="clamp subtle">{skill.description}</span>}
       {skill.message && <span className="error-text">{skill.message}</span>}
-      {skill.editedOutside && !uploading && <span className="warn-text">The next sync replaces this copy.</span>}
+      {skill.editedOutside && !uploading && <span className="warn-text">Automatic syncs leave this copy alone; Sync now replaces it.</span>}
       {((skill.editedOutside && !uploading) || (!shared && skill.files > 0)) &&
         <span className="skill-row-actions">
           {skill.editedOutside && !uploading && <button className="small-button" onClick={() => edits.useVersion(skill.name, tool)}>Use {toolName}'s version</button>}
