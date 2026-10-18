@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, hasNative, type Mode, type Presets, type Status, type ToolPreset, type ToolStatus } from './api'
 import HarnessLogo from './HarnessLogo'
 import { BackIcon, CloudIcon, ComputerIcon, FolderIcon, GearIcon, LinesIcon, PlusIcon, SkillsIcon, SyncIcon, ToneIcon } from './icons'
+import { diffLines, render } from './diff'
 import { skillEdits, SkillsView, ToolSkills, type SkillEdits } from './Skills'
 import { listNames, modeLabels, presetFromFile, shortTime, summarize } from './summary'
 
@@ -130,7 +131,7 @@ export default function App() {
           : !status.document
             ? <p className="lead">Waiting for the sync file…</p>
             : tool
-              ? <ToolView tool={tool} status={status} draft={draft} edits={edits} busy={busy} run={run} onChange={change => setTool(tool.id, change)} onView={setView} />
+              ? <ToolView key={tool.id} tool={tool} status={status} draft={draft} edits={edits} busy={busy} run={run} onChange={change => setTool(tool.id, change)} onView={setView} />
               : view === 'skills'
                 ? <SkillsView status={status} draft={draft} edits={edits} />
                 : <SharedView status={status} draft={draft} onChange={shared => setDraft({ ...draft, shared })} />}
@@ -229,6 +230,7 @@ function ToolView({ tool, status, draft, edits, busy, run, onChange, onView }: {
         <span>This file was changed outside Harness Sync. Automatic syncs leave it alone; Sync now replaces it.</span>
         <button className="small-button" disabled={busy} onClick={keepFile}>Keep this file's text</button>
       </div>}
+      {(tool.state === 'differs' || tool.editedOutside) && <Changes tool={tool} status={status} />}
       {!tool.installed && <p className="banner info">Your choice still applies on computers where {tool.name} is installed.</p>}
 
       <h2 className="list-heading">Instructions</h2>
@@ -261,6 +263,35 @@ function ToolView({ tool, status, draft, edits, busy, run, onChange, onView }: {
       <ToolSkills tool={tool} status={status} draft={draft} preset={preset} edits={edits}
         onMode={skillMode => onChange({ skillMode })} onEditShared={() => onView('skills')} />
     </>
+  )
+}
+
+/** What the next sync changes in a tool's file, from the saved presets. */
+function Changes({ tool, status }: { tool: ToolStatus; status: Status }) {
+  const [open, setOpen] = useState(false)
+  const [current, setCurrent] = useState<{ text: string } | { error: string } | null>(null)
+  useEffect(() => {
+    if (!open) return
+    let live = true
+    api.readToolInstructions(tool.id)
+      .then(text => live && setCurrent({ text }), failure => live && setCurrent({ error: String(failure) }))
+    return () => { live = false }
+  }, [open, tool.id, status])
+  const next = status.document ? render(status.document, tool.id) : null
+  return (
+    <div className="changes">
+      <button className="text-button" aria-expanded={open} onClick={() => setOpen(!open)}>{open ? 'Hide changes' : 'Show changes'}</button>
+      {open && (current == null
+        ? <p className="lead">Loading…</p>
+        : 'error' in current
+          ? <p className="banner error">{current.error}</p>
+          : next == null
+            ? <p className="lead">Harness Sync leaves this file alone.</p>
+            : <pre className="diff" aria-label="Changes the next sync makes">
+              {diffLines(current.text, next).map((line, index) =>
+                <span key={index} className={line.kind === '+' ? 'added' : line.kind === '-' ? 'removed' : undefined}>{line.kind} {line.text}</span>)}
+            </pre>)}
+    </div>
   )
 }
 
