@@ -182,12 +182,21 @@ pub fn parse(content: &str) -> Result<SyncDocument, String> {
     Ok(document)
 }
 
+fn read(path: &Path) -> Result<String, String> {
+    fsutil::read_text_limited(path, fsutil::MAX_SYNC_FILE_BYTES)
+        .map_err(|error| format!("The sync file {error}"))?
+        .ok_or_else(|| "The sync file was not found. Check that Google Drive is running.".into())
+}
+
 /// Loads the document and the hash of its exact bytes.
 pub fn load(path: &Path) -> Result<(SyncDocument, String), String> {
-    let content = fsutil::read_text_limited(path, fsutil::MAX_SYNC_FILE_BYTES)
-        .map_err(|error| format!("The sync file {error}"))?
-        .ok_or("The sync file was not found. Check that Google Drive is running.")?;
+    let content = read(path)?;
     Ok((parse(&content)?, fsutil::hash(content.as_bytes())))
+}
+
+/// The hash `load` would return, without parsing.
+pub fn read_hash(path: &Path) -> Result<String, String> {
+    read(path).map(|content| fsutil::hash(content.as_bytes()))
 }
 
 fn write(path: &Path, document: &SyncDocument) -> Result<(), String> {
@@ -367,6 +376,8 @@ mod tests {
         // Default presets are not stored.
         assert!(!saved.tools.contains_key("codex"));
         assert_eq!(load(&path).unwrap().0, saved);
+        assert_eq!(read_hash(&path).unwrap(), load(&path).unwrap().1);
+        assert!(read_hash(&dir.join("missing.json")).unwrap_err().contains("not found"));
 
         // Sharing a skill needs its content; uploads provide it.
         let mut shared = presets("Hi", &[]);
