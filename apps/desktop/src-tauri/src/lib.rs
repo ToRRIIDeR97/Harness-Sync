@@ -23,6 +23,7 @@ use tauri_plugin_notification::NotificationExt;
 use tools::Locations;
 
 const CHECK_INTERVAL: Duration = Duration::from_secs(5);
+const FULL_CHECK_TICKS: u32 = 12;
 const POPOVER_WIDTH: f64 = 340.0;
 const POPOVER_HEIGHT: f64 = 460.0;
 
@@ -189,27 +190,53 @@ impl App {
     }
 }
 
+/// Size and modified time of the sync file, to skip reading it while unchanged.
+fn file_stamp(path: &std::path::Path) -> Option<(PathBuf, u64, std::time::SystemTime)> {
+    let metadata = std::fs::symlink_metadata(path).ok()?;
+    Some((path.to_path_buf(), metadata.len(), metadata.modified().ok()?))
+}
+
 /// Polls the sync file and applies it whenever its bytes change.
 fn background(app: AppHandle) {
     std::thread::spawn(move || {
         let mut first = true;
+        let mut tick: u32 = 0;
+        // Set only after a tick that ended without an error.
+        let mut stamp = None;
+        // The hash read last tick, so an invalid file is parsed once.
+        let mut tried: Option<String> = None;
         loop {
             let state = app.state::<App>();
             let result = state.with_gate(|runtime| {
                 let local = LocalState::load(&state.state_path);
                 let Some(path) = local.sync_file.clone() else {
+                    stamp = None;
                     return Ok(None);
                 };
-                let changed = match document::load(&path) {
-                    Ok((_, hash)) => first || local.last_file_hash.as_deref() != Some(&hash),
-                    Err(error) => runtime.last_error.as_deref() != Some(&error),
-                };
-                if !changed {
+                let current = file_stamp(&path);
+                // Some filesystems keep the modified time, so check fully about once a minute.
+                if tick % FULL_CHECK_TICKS != 0 && current.is_some() && current == stamp {
                     return Ok(None);
                 }
-                state.refresh(runtime, true).map(Some)
+                stamp = None;
+                let read = document::read_hash(&path);
+                let changed = match &read {
+                    Ok(hash) => {
+                        first
+                            || (tried.as_ref() != Some(hash)
+                                && (runtime.last_error.is_some() || local.last_file_hash.as_ref() != Some(hash)))
+                    }
+                    Err(error) => runtime.last_error.as_ref() != Some(error),
+                };
+                let status = if changed { Some(state.refresh(runtime, true)?) } else { None };
+                tried = read.ok();
+                if runtime.last_error.is_none() {
+                    stamp = current;
+                }
+                Ok(status)
             });
             first = false;
+            tick = tick.wrapping_add(1);
             if let Ok(Some(status)) = result {
                 notify_remote_update(&app, &status);
                 let _ = app.emit("status-changed", ());
