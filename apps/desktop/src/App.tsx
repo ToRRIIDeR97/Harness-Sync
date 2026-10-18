@@ -4,7 +4,7 @@ import HarnessLogo from './HarnessLogo'
 import { BackIcon, CloudIcon, ComputerIcon, FolderIcon, GearIcon, LinesIcon, PlusIcon, SkillsIcon, SyncIcon, ToneIcon } from './icons'
 import { diffLines, render } from './diff'
 import { skillEdits, SkillsView, ToolSkills, type SkillEdits } from './Skills'
-import { listNames, modeLabels, presetFromFile, shortTime, summarize } from './summary'
+import { listNames, mergePresets, modeLabels, presetFromFile, same, shortTime, summarize } from './summary'
 
 type View = 'shared' | 'skills' | 'settings' | string
 type Run = (work: () => Promise<Status | null | void>, force?: boolean, success?: string) => Promise<void>
@@ -19,8 +19,6 @@ function presetsFrom(status: Status | null): Presets {
   }
   return { shared: status?.document?.shared ?? '', tools, sharedSkills: status?.document?.sharedSkills ?? [], skillSources: {} }
 }
-
-const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
 
 const saveHint = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘S' : 'Ctrl+S'
 
@@ -39,19 +37,31 @@ export default function App() {
   const dirty = status?.document != null && !same(draft, saved)
   const remoteChanged = dirty && baseRevision != null && status?.document?.revision !== baseRevision
 
-  // Adopt fresh status, keeping unsaved edits when there are any.
+  // Adopt fresh status, keeping unsaved edits when there are any and merging in remote changes that don't touch them.
   const statusRef = useRef<Status | null>(null)
   const draftRef = useRef(draft)
   draftRef.current = draft
+  const baseRef = useRef<{ revision: number | null; presets: Presets }>({ revision: null, presets: presetsFrom(null) })
+  const rebase = useCallback((next: Status | null) => {
+    baseRef.current = { revision: next?.document?.revision ?? null, presets: presetsFrom(next) }
+    setBaseRevision(baseRef.current.revision)
+  }, [])
   const adopt = useCallback((next: Status, force = false) => {
     const clean = force || same(draftRef.current, presetsFrom(statusRef.current))
     statusRef.current = next
     setStatus(next)
     if (clean) {
       setDraft(presetsFrom(next))
-      setBaseRevision(next.document?.revision ?? null)
+      rebase(next)
+    } else if (next.document && baseRef.current.revision != null && next.document.revision !== baseRef.current.revision) {
+      const { merged, conflicts } = mergePresets(baseRef.current.presets, draftRef.current, presetsFrom(next))
+      if (conflicts.length) return
+      draftRef.current = merged
+      setDraft(merged)
+      rebase(next)
+      setMessage({ tone: 'ok', text: `Merged changes from ${next.document.updatedBy}` })
     }
-  }, [])
+  }, [rebase])
 
   const run = useCallback(async (work: () => Promise<Status | null | void>, force = false, success?: string) => {
     setBusy(true)
@@ -116,7 +126,11 @@ export default function App() {
     setDraft(current => ({ ...current, tools: { ...current.tools, [id]: { ...current.tools[id], ...change } } }))
   const save = () => run(() => api.savePresets(draft, baseRevision ?? status.document!.revision), true, 'Saved to all computers')
   if (view !== 'settings' && dirty && !busy && !remoteChanged) shortcut.current = save
-  const discard = () => { setDraft(saved); setBaseRevision(status.document?.revision ?? null) }
+  const discard = () => { setDraft(saved); rebase(status) }
+  const conflicts = remoteChanged
+    ? mergePresets(baseRef.current.presets, draft, saved).conflicts.map(key =>
+      key === 'shared' ? 'Shared preset' : key === 'sharedSkills' ? 'Shared skills' : status.tools.find(item => item.id === key)?.name ?? key)
+    : []
   const edits = skillEdits(status, setDraft)
 
   return (
@@ -136,7 +150,7 @@ export default function App() {
                 ? <SkillsView status={status} draft={draft} edits={edits} />
                 : <SharedView status={status} draft={draft} onChange={shared => setDraft({ ...draft, shared })} />}
         {view !== 'settings' && status.document &&
-          <SaveBar dirty={dirty} busy={busy} remoteBy={remoteChanged ? status.document.updatedBy : null} onSave={save} onDiscard={discard} />}
+          <SaveBar dirty={dirty} busy={busy} remoteBy={remoteChanged ? status.document.updatedBy : null} conflicts={conflicts} onSave={save} onDiscard={discard} />}
       </main>
     </div>
   )
@@ -295,11 +309,11 @@ function Changes({ tool, status }: { tool: ToolStatus; status: Status }) {
   )
 }
 
-function SaveBar({ dirty, busy, remoteBy, onSave, onDiscard }: { dirty: boolean; busy: boolean; remoteBy: string | null; onSave: () => void; onDiscard: () => void }) {
+function SaveBar({ dirty, busy, remoteBy, conflicts, onSave, onDiscard }: { dirty: boolean; busy: boolean; remoteBy: string | null; conflicts: string[]; onSave: () => void; onDiscard: () => void }) {
   return (
     <div className="save-bar">
       {remoteBy
-        ? <span className="save-state warn"><span className="dot" />{remoteBy} saved a newer version</span>
+        ? <span className="save-state warn"><span className="dot" />{remoteBy} saved a newer version{conflicts.length ? ` of ${listNames(conflicts)}` : ''}</span>
         : dirty
           ? <span className="save-state warn"><span className="dot" />Unsaved changes</span>
           : <span className="save-state">All changes saved</span>}
