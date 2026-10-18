@@ -44,6 +44,6 @@ Not yet verified: the tray popover (shell access was not available to click the 
 ## Limits
 
 - Concurrent saves on two computers within Drive's sync delay can still produce a Drive conflict copy; the app reports it but does not merge.
-- Outside edits to tool files are replaced on the next sync with no backup.
+- Outside edits to tool files are kept by automatic syncs but replaced, with no backup, by Sync now or the next save.
 - MCP definitions and project skills are not synced. Skills with binary files (images, PDFs) cannot be added.
 - Every computer needs the version 5 app once the file is saved by it; older versions refuse the file.
