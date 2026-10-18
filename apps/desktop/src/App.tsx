@@ -21,6 +21,8 @@ function presetsFrom(status: Status | null): Presets {
 
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
 
+const saveHint = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘S' : 'Ctrl+S'
+
 /** Tools whose instructions on this computer can become the shared preset. */
 const localSources = (status: Status) => status.tools.filter(tool => tool.exists && tool.lines > 0 && tool.state !== 'error')
 
@@ -79,6 +81,18 @@ export default function App() {
     return () => clearTimeout(timer)
   }, [message])
 
+  const shortcut = useRef<(() => void) | null>(null)
+  shortcut.current = null
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 's') return
+      event.preventDefault()
+      shortcut.current?.()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
   if (!hasNative()) {
     return <div className="center-screen"><div className="first-run"><h1>Harness Sync</h1><p className="lead">Open the desktop app to manage your instructions.</p></div></div>
   }
@@ -100,6 +114,7 @@ export default function App() {
   const setTool = (id: string, change: Partial<ToolPreset>) =>
     setDraft(current => ({ ...current, tools: { ...current.tools, [id]: { ...current.tools[id], ...change } } }))
   const save = () => run(() => api.savePresets(draft, baseRevision ?? status.document!.revision), true, 'Saved to all computers')
+  if (view !== 'settings' && dirty && !busy && !remoteChanged) shortcut.current = save
   const discard = () => { setDraft(saved); setBaseRevision(status.document?.revision ?? null) }
   const edits = skillEdits(status, setDraft)
 
@@ -254,7 +269,7 @@ function SaveBar({ dirty, busy, remoteBy, onSave, onDiscard }: { dirty: boolean;
           : <span className="save-state">All changes saved</span>}
       <span className="save-actions">
         <button className="big secondary" disabled={!dirty || busy} onClick={onDiscard}>{remoteBy ? 'Load their version' : 'Discard'}</button>
-        <button className="big primary" disabled={!dirty || busy || remoteBy != null} onClick={onSave}>Save to all computers</button>
+        <button className="big primary" disabled={!dirty || busy || remoteBy != null} title={saveHint} onClick={onSave}>Save to all computers</button>
       </span>
     </div>
   )
