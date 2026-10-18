@@ -10,7 +10,7 @@ Tauri 2 desktop app. The React UI calls narrow Rust commands and has no filesyst
 | `document.rs` | Sync file format, validation, create, revision-checked save, Drive conflict-copy detection |
 | `skills.rs` | Reading, validating, hashing, writing and removing skill folders; listing skills found only on this computer |
 | `apply.rs` | Rendering presets per tool, comparing and replacing tool files, capturing this computer's files as presets |
-| `state.rs` | Per-computer state in app data: sync-file path, computer name, last applied hashes per tool and per tool skill, which skill copies it wrote, last applied file hash |
+| `state.rs` | Per-computer state in app data: sync-file path, computer name, last applied hashes per tool and per tool skill, which skill copies it wrote, last applied file hash. An unreadable state file is renamed to `state.json.unreadable-<unix seconds>` and the app shows a warning for the session before continuing with defaults |
 | `fsutil.rs` | Size-limited reads, atomic writes, hashing, timestamps |
 | `lib.rs` | Commands, background worker, tray icon and status popover, autostart, notifications |
 

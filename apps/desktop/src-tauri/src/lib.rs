@@ -40,6 +40,8 @@ struct App {
 #[derive(Default)]
 struct Runtime {
     last_error: Option<String>,
+    /// Why local settings were reset this session, if they could not be read.
+    state_warning: Option<String>,
     last_checked: Option<String>,
     /// A sync file the user picked but has not yet decided how to join.
     pending: Option<PathBuf>,
@@ -93,6 +95,7 @@ struct Status {
     sync_file: Option<SyncFile>,
     document: Option<DocumentView>,
     error: Option<String>,
+    warning: Option<String>,
     last_checked: Option<String>,
     pending: Option<PendingFile>,
     tools: Vec<ToolStatus>,
@@ -100,9 +103,18 @@ struct Status {
 }
 
 impl App {
+    /// Loads local settings, keeping any reset warning for the status. Caller holds the gate.
+    fn local(&self, runtime: &mut Runtime) -> LocalState {
+        let (local, warning) = LocalState::load(&self.state_path);
+        if warning.is_some() {
+            runtime.state_warning = warning;
+        }
+        local
+    }
+
     /// Reads the sync file and compares or applies it. Caller holds the gate.
     fn refresh(&self, runtime: &mut Runtime, write: Write) -> Result<Status, String> {
-        let mut local = LocalState::load(&self.state_path);
+        let mut local = self.local(runtime);
         let loaded = local.sync_file.as_deref().map(document::load);
         let document = match &loaded {
             Some(Ok((document, _))) => Some(document),
@@ -133,6 +145,7 @@ impl App {
             }),
             document: loaded.and_then(Result::ok).map(|(document, _)| document.into()),
             error: runtime.last_error.clone(),
+            warning: runtime.state_warning.clone(),
             last_checked: runtime.last_checked.clone(),
             pending: runtime.pending.as_deref().and_then(|path| {
                 let (document, _) = document::load(path).ok()?;
@@ -173,7 +186,7 @@ impl App {
     }
 
     fn connect(&self, runtime: &mut Runtime, path: PathBuf) -> Result<Status, String> {
-        let mut local = LocalState::load(&self.state_path);
+        let mut local = self.local(runtime);
         local.sync_file = Some(path);
         local.last_file_hash = None;
         local.save(&self.state_path)?;
@@ -181,10 +194,10 @@ impl App {
     }
 
     /// Replaces the presets in `path` with this computer's instruction files.
-    fn use_this_computer(&self, path: &std::path::Path, seed: &str, expected_revision: Option<u64>) -> Result<(), String> {
+    fn use_this_computer(&self, runtime: &mut Runtime, path: &std::path::Path, seed: &str, expected_revision: Option<u64>) -> Result<(), String> {
         let (current, _) = document::load(path)?;
         let presets = apply::capture(&current, &self.locations, seed)?;
-        let device = LocalState::load(&self.state_path).device();
+        let device = self.local(runtime).device();
         document::save(path, expected_revision.unwrap_or(current.revision), presets, BTreeMap::new(), &device)?;
         Ok(())
     }
@@ -208,7 +221,7 @@ fn background(app: AppHandle) {
         loop {
             let state = app.state::<App>();
             let result = state.with_gate(|runtime| {
-                let local = LocalState::load(&state.state_path);
+                let local = state.local(runtime);
                 let Some(path) = local.sync_file.clone() else {
                     stamp = None;
                     return Ok(None);
@@ -323,7 +336,7 @@ async fn create_sync_file(
         None => String::new(),
     };
     app.with_gate(|runtime| {
-        let device = LocalState::load(&app.state_path).device();
+        let device = app.local(runtime).device();
         document::create(&path, shared, &device)?;
         app.connect(runtime, path).map(Some)
     })
@@ -361,7 +374,7 @@ fn join_sync_file(app: State<'_, App>, seed_tool: Option<String>) -> Result<Stat
     app.with_gate(|runtime| {
         let path = runtime.pending.clone().ok_or("Choose a sync file first")?;
         if let Some(seed) = seed_tool {
-            app.use_this_computer(&path, &seed, None)?;
+            app.use_this_computer(runtime, &path, &seed, None)?;
         }
         runtime.pending = None;
         app.connect(runtime, path)
@@ -380,8 +393,8 @@ fn cancel_join(app: State<'_, App>) -> Result<Status, String> {
 #[tauri::command]
 fn use_this_computer(app: State<'_, App>, seed_tool: String, expected_revision: u64) -> Result<Status, String> {
     app.with_gate(|runtime| {
-        let path = LocalState::load(&app.state_path).sync_file.ok_or("Connect a sync file first")?;
-        app.use_this_computer(&path, &seed_tool, Some(expected_revision))?;
+        let path = app.local(runtime).sync_file.ok_or("Connect a sync file first")?;
+        app.use_this_computer(runtime, &path, &seed_tool, Some(expected_revision))?;
         app.refresh(runtime, Write::Always)
     })
 }
@@ -389,7 +402,7 @@ fn use_this_computer(app: State<'_, App>, seed_tool: String, expected_revision: 
 #[tauri::command]
 fn disconnect(app: State<'_, App>) -> Result<Status, String> {
     app.with_gate(|runtime| {
-        let mut local = LocalState::load(&app.state_path);
+        let mut local = app.local(runtime);
         local.sync_file = None;
         local.last_file_hash = None;
         local.save(&app.state_path)?;
@@ -400,7 +413,7 @@ fn disconnect(app: State<'_, App>) -> Result<Status, String> {
 #[tauri::command]
 fn save_presets(app: State<'_, App>, presets: Presets, expected_revision: u64) -> Result<Status, String> {
     app.with_gate(|runtime| {
-        let local = LocalState::load(&app.state_path);
+        let local = app.local(runtime);
         let path = local.sync_file.clone().ok_or("Connect a sync file first")?;
         let uploads = app.read_skill_sources(&presets)?;
         document::save(&path, expected_revision, presets, uploads, &local.device())?;
@@ -415,7 +428,7 @@ fn set_device_name(app: State<'_, App>, name: String) -> Result<Status, String> 
         return Err("Use a name between 1 and 64 characters".into());
     }
     app.with_gate(|runtime| {
-        let mut local = LocalState::load(&app.state_path);
+        let mut local = app.local(runtime);
         local.device_name = Some(name.to_owned());
         local.save(&app.state_path)?;
         app.refresh(runtime, Write::Never)

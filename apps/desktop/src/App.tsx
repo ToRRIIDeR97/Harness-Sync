@@ -124,6 +124,7 @@ export default function App() {
       <main className="main">
         {message && <p className={`toast ${message.tone}`} role={message.tone === 'error' ? 'alert' : 'status'}>{message.text}</p>}
         {status.error && <p className="banner error">{status.error}</p>}
+        {status.warning && <p className="banner warn">{status.warning}</p>}
         {view === 'settings'
           ? <Settings status={status} busy={busy} dirty={dirty} run={run} />
           : !status.document
@@ -360,6 +361,7 @@ function FirstRun({ status, busy, message, onCreate, onOpen }: { status: Status;
     <div className="center-screen">
       <div className="first-run">
         {message?.tone === 'error' && <p className="banner error">{message.text}</p>}
+        {status.warning && <p className="banner warn">{status.warning}</p>}
         {step === 'ask' ? <>
           <h1>One set of instructions. Every AI tool.</h1>
           <p className="lead">Is this your first computer?</p>
