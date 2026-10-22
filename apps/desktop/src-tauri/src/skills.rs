@@ -273,6 +273,10 @@ pub fn run(
             if wanted.as_ref().is_some_and(|set| set.contains_key(name.as_str())) {
                 continue;
             }
+            // Folders without SKILL.md, such as other apps' skill caches, are not skills.
+            if !dir.join(&name).join(ENTRY_FILE).is_file() {
+                continue;
+            }
             let entry = match read(&dir.join(&name)) {
                 Ok(Some(skill)) if skill.files.contains_key(ENTRY_FILE) => local(&name, Some(&skill), false, SkillState::Local, None),
                 Ok(_) => continue,
@@ -508,6 +512,22 @@ mod tests {
         assert_eq!(state_of(&report, "opencode", "extra"), Some(SkillState::Updated));
         assert!(report.tools.iter().find(|tool| tool.tool == "codex").unwrap().skills.is_empty());
         assert!(!desk.skills_dir("codex").join("base").exists());
+    }
+
+    #[test]
+    fn folders_without_skill_md_are_skipped() {
+        let (desk, mut state) = machine("skills-not-skill", &["claude"]);
+        let cache = desk.skills_dir("claude").join("synced/bucket/morning");
+        fs::create_dir_all(cache.join("assets")).unwrap();
+        fs::write(cache.join("SKILL.md"), "morning").unwrap();
+        fs::write(cache.join("assets/font.woff2"), [0x77u8, 0x4f, 0xff, 0x00]).unwrap();
+        let mine = desk.skills_dir("claude").join("mine");
+        fs::create_dir_all(&mine).unwrap();
+        fs::write(mine.join("SKILL.md"), "mine").unwrap();
+
+        let report = run(None, &desk, &mut state, false);
+        assert!(find(&report, "claude", "synced").is_none());
+        assert_eq!(state_of(&report, "claude", "mine"), Some(SkillState::Local));
     }
 
     #[test]
