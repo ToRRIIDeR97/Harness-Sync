@@ -7,9 +7,12 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_FILES: usize = 200;
 const ENTRY_FILE: &str = "SKILL.md";
+/// Backups kept for each skill copy.
+const KEPT_BACKUPS: usize = 5;
 
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -35,6 +38,11 @@ pub struct LocalSkill {
     pub state: SkillState,
     /// The copy changed since Harness Sync last wrote or confirmed it.
     pub edited_outside: bool,
+    /// An outside edit the background worker uploads by itself, because the sync file still holds
+    /// the version last applied here. It is not uploaded if another tool's copy changed differently.
+    pub auto_upload: bool,
+    /// Where this run saved the copy it replaced, when that copy was not one Harness Sync wrote.
+    pub backup: Option<String>,
     pub message: Option<String>,
 }
 
@@ -238,18 +246,76 @@ fn local(name: &str, skill: Option<&Skill>, wanted: bool, state: SkillState, mes
         wanted,
         state,
         edited_outside: false,
+        auto_upload: false,
+        backup: None,
         message,
     }
 }
 
+/// Saves `skill` under `root/<owner>/<name>/<unix time>` and keeps the newest `KEPT_BACKUPS`.
+pub fn back_up(root: &Path, owner: &str, name: &str, skill: &Skill) -> Result<PathBuf, String> {
+    let parent = root.join(owner).join(name);
+    // Seconds and nanoseconds, so names sort by age and a pruned name is never used again.
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let dir = (0..)
+        .map(|n| parent.join(format!("{}-{:09}", now.as_secs(), now.subsec_nanos() + n)))
+        .find(|dir| !dir.exists())
+        .ok_or("No free backup folder")?;
+    for (relative, text) in &skill.files {
+        fsutil::write_atomic(&join(&dir, relative), text)?;
+    }
+    let mut kept: Vec<PathBuf> = fs::read_dir(&parent)
+        .map_err(|error| error.to_string())?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    kept.sort();
+    for old in kept.iter().rev().skip(KEPT_BACKUPS) {
+        let _ = fs::remove_dir_all(old);
+    }
+    Ok(dir)
+}
+
+/// Skills edited in a tool's folder that are safe to upload without asking: the sync file still
+/// holds the version Harness Sync last applied to that tool, and every edited copy on this
+/// computer is identical. Anything else is a conflict for the user to settle in the app.
+pub fn outside_edits(document: &SyncDocument, locations: &Locations, state: &LocalState) -> BTreeMap<String, Skill> {
+    // `None` marks a skill with conflicting edits.
+    let mut edits: BTreeMap<String, Option<Skill>> = BTreeMap::new();
+    for tool in tools::TOOLS.iter().filter(|tool| locations.installed(tool)) {
+        let dir = locations.skills_dir(tool.id);
+        for (name, skill) in document.skill_set(tool.id).iter().flatten() {
+            let Ok(Some(copy)) = read(&dir.join(name)) else {
+                continue;
+            };
+            let (wanted, current) = (hash(skill), hash(&copy));
+            let applied = state.applied_skills.get(&format!("{}/{name}", tool.id));
+            // In sync, or an untouched older copy the next apply updates.
+            if current == wanted || applied == Some(&current) {
+                continue;
+            }
+            let safe = applied == Some(&wanted) && validate(name, &copy).is_ok();
+            let agreed = match edits.get(*name) {
+                None => safe,
+                Some(other) => safe && other.as_ref() == Some(&copy),
+            };
+            edits.insert(name.to_string(), agreed.then_some(copy));
+        }
+    }
+    edits.into_iter().filter_map(|(name, skill)| Some((name, skill?))).collect()
+}
+
 /// Compares every installed tool's skills folder with its skill set. Unless `write_files` is
 /// `Never`, replaces differing copies as it allows and deletes unchanged copies Harness Sync wrote
-/// that left the set.
+/// that left the set. A replaced copy that Harness Sync did not write itself is first saved under
+/// `backups`; if that fails the copy is left alone. With no `backups` folder nothing is saved.
 pub fn run(
     document: Option<&SyncDocument>,
     locations: &Locations,
     state: &mut LocalState,
     write_files: Write,
+    backups: Option<&Path>,
 ) -> SkillsReport {
     let library = document
         .map(|doc| {
@@ -298,18 +364,36 @@ pub fn run(
             if current_hash.as_deref() != Some(wanted_hash.as_str()) {
                 entry.edited_outside = current_hash.is_some()
                     && state.applied_skills.get(&key).is_some_and(|applied| Some(applied) != current_hash.as_ref());
+                entry.auto_upload = entry.edited_outside && state.applied_skills.get(&key) == Some(&wanted_hash);
                 entry.state = SkillState::Differs;
                 let keep = write_files == Write::KeepOutsideEdits && entry.edited_outside;
                 if write_files != Write::Never && !keep {
-                    match write(&target, skill) {
-                        Ok(()) => {
+                    // A copy Harness Sync last wrote or confirmed is already in the sync file's history;
+                    // any other content exists nowhere else.
+                    let unsaved = current
+                        .as_ref()
+                        .filter(|copy| !copy.files.is_empty() && state.applied_skills.get(&key) != current_hash.as_ref());
+                    let saved = match (unsaved, backups) {
+                        (Some(copy), Some(root)) => back_up(root, tool.id, name, copy)
+                            .map(Some)
+                            .map_err(|error| format!("Could not back up {}, so it was left alone: {error}", target.display())),
+                        _ => Ok(None),
+                    };
+                    let written = saved.and_then(|backup| {
+                        write(&target, skill).map_err(|error| format!("Could not write {}: {error}", target.display()))?;
+                        Ok(backup)
+                    });
+                    match written {
+                        Ok(backup) => {
                             entry.state = SkillState::Updated;
                             entry.edited_outside = false;
+                            entry.auto_upload = false;
+                            entry.backup = backup.map(|dir| dir.to_string_lossy().into_owned());
                             state.written_skills.insert(key.clone());
                         }
-                        Err(error) => {
+                        Err(message) => {
                             entry.state = SkillState::Error;
-                            entry.message = Some(format!("Could not write {}: {error}", target.display()));
+                            entry.message = Some(message);
                         }
                     }
                 }
@@ -419,7 +503,7 @@ mod tests {
         fs::write(source.join("stray.pyc"), [0xffu8]).unwrap();
 
         let created = document::create(&drive, "Rules".into(), "desk").unwrap();
-        let listed = run(Some(&created), &desk, &mut desk_state, Write::Never);
+        let listed = run(Some(&created), &desk, &mut desk_state, Write::Never, None);
         let found = find(&listed, "claude", "review").unwrap();
         assert_eq!((found.state, found.wanted), (SkillState::Local, false));
         assert_eq!(found.description, "Reviews code");
@@ -428,7 +512,7 @@ mod tests {
         let local = read(&source).unwrap().unwrap();
         assert_eq!(local.files.len(), 2);
         let saved = share(&drive, created.revision, &["review"], [("review".to_string(), local.clone())].into(), BTreeMap::new());
-        let report = run(Some(&saved), &desk, &mut desk_state, Write::Always);
+        let report = run(Some(&saved), &desk, &mut desk_state, Write::Always, None);
         assert_eq!(report.library.len(), 1);
         assert_eq!(state_of(&report, "claude", "review"), Some(SkillState::InSync));
         assert_eq!(state_of(&report, "codex", "review"), Some(SkillState::Updated));
@@ -440,24 +524,24 @@ mod tests {
         fs::create_dir_all(&mine).unwrap();
         fs::write(mine.join("SKILL.md"), "mine").unwrap();
         let (from_drive, _) = document::load(&drive).unwrap();
-        run(Some(&from_drive), &laptop, &mut laptop_state, Write::Always);
+        run(Some(&from_drive), &laptop, &mut laptop_state, Write::Always, None);
         assert_eq!(read(&laptop.skills_dir("opencode").join("review")).unwrap().unwrap(), local);
 
         // An outside edit is reported, then replaced, including extra files.
         let target = laptop.skills_dir("opencode").join("review");
         fs::write(target.join("extra.md"), "extra").unwrap();
-        let checked = run(Some(&from_drive), &laptop, &mut laptop_state, Write::Never);
+        let checked = run(Some(&from_drive), &laptop, &mut laptop_state, Write::Never, None);
         let found = find(&checked, "opencode", "review").unwrap();
         assert_eq!(found.state, SkillState::Differs);
         assert!(found.edited_outside);
-        run(Some(&from_drive), &laptop, &mut laptop_state, Write::Always);
+        run(Some(&from_drive), &laptop, &mut laptop_state, Write::Always, None);
         assert!(!target.join("extra.md").exists());
 
         // Unsharing deletes unchanged copies Harness Sync wrote, keeps edited ones and the original.
         fs::write(desk.skills_dir("codex").join("review/SKILL.md"), "edited").unwrap();
         let removed = share(&drive, saved.revision, &[], BTreeMap::new(), BTreeMap::new());
-        run(Some(&removed), &laptop, &mut laptop_state, Write::Always);
-        let report = run(Some(&removed), &desk, &mut desk_state, Write::Always);
+        run(Some(&removed), &laptop, &mut laptop_state, Write::Always, None);
+        let report = run(Some(&removed), &desk, &mut desk_state, Write::Always, None);
         assert!(!target.exists());
         assert!(source.join("SKILL.md").exists());
         assert_eq!(state_of(&report, "claude", "review"), Some(SkillState::Local));
@@ -473,20 +557,113 @@ mod tests {
         let (desk, mut state) = machine("skills-keep-desk", &["claude", "codex"]);
         let created = document::create(&drive, "Rules".into(), "desk").unwrap();
         let saved = share(&drive, created.revision, &["tip"], [("tip".to_string(), skill(&[("SKILL.md", "tip")]))].into(), BTreeMap::new());
-        run(Some(&saved), &desk, &mut state, Write::Always);
+        run(Some(&saved), &desk, &mut state, Write::Always, None);
         let edited = desk.skills_dir("codex").join("tip/SKILL.md");
         fs::write(&edited, "mine").unwrap();
         let newer = share(&drive, saved.revision, &["tip"], [("tip".to_string(), skill(&[("SKILL.md", "tip v2")]))].into(), BTreeMap::new());
 
-        let auto = run(Some(&newer), &desk, &mut state, Write::KeepOutsideEdits);
+        let auto = run(Some(&newer), &desk, &mut state, Write::KeepOutsideEdits, None);
         let found = find(&auto, "codex", "tip").unwrap();
         assert_eq!((found.state, found.edited_outside), (SkillState::Differs, true));
         assert_eq!(fs::read_to_string(&edited).unwrap(), "mine");
         assert_eq!(state_of(&auto, "claude", "tip"), Some(SkillState::Updated));
 
-        let explicit = run(Some(&newer), &desk, &mut state, Write::Always);
+        let explicit = run(Some(&newer), &desk, &mut state, Write::Always, None);
         assert_eq!(state_of(&explicit, "codex", "tip"), Some(SkillState::Updated));
         assert_eq!(fs::read_to_string(&edited).unwrap(), "tip v2");
+    }
+
+    #[test]
+    fn replaced_edits_are_backed_up() {
+        let drive = fsutil::temp_dir("skills-backup").join("harness-sync.json");
+        let backups = fsutil::temp_dir("skills-backup-data").join("backups");
+        let (desk, mut state) = machine("skills-backup-desk", &["claude", "codex"]);
+        // Codex already has its own skill of the same name before the first apply.
+        let codex = desk.skills_dir("codex").join("tip");
+        fs::create_dir_all(&codex).unwrap();
+        fs::write(codex.join("SKILL.md"), "codex original").unwrap();
+        let created = document::create(&drive, "Rules".into(), "desk").unwrap();
+        let saved = share(&drive, created.revision, &["tip"], [("tip".to_string(), skill(&[("SKILL.md", "tip")]))].into(), BTreeMap::new());
+
+        let first = run(Some(&saved), &desk, &mut state, Write::Always, Some(&backups));
+        let replaced = find(&first, "codex", "tip").unwrap();
+        assert_eq!(replaced.state, SkillState::Updated);
+        let kept = PathBuf::from(replaced.backup.clone().unwrap());
+        assert!(kept.starts_with(backups.join("codex").join("tip")));
+        assert_eq!(fs::read_to_string(kept.join("SKILL.md")).unwrap(), "codex original");
+        // Claude had no copy, so nothing was saved for it.
+        assert!(find(&first, "claude", "tip").unwrap().backup.is_none());
+
+        // An outside edit with an extra file is saved whole before Sync now replaces it.
+        fs::write(codex.join("SKILL.md"), "mine").unwrap();
+        fs::create_dir_all(codex.join("scripts")).unwrap();
+        fs::write(codex.join("scripts/run.py"), "print()").unwrap();
+        let second = run(Some(&saved), &desk, &mut state, Write::Always, Some(&backups));
+        let kept = PathBuf::from(find(&second, "codex", "tip").unwrap().backup.clone().unwrap());
+        assert_eq!(fs::read_to_string(kept.join("SKILL.md")).unwrap(), "mine");
+        assert_eq!(fs::read_to_string(kept.join("scripts/run.py")).unwrap(), "print()");
+        assert_eq!(fs::read_to_string(codex.join("SKILL.md")).unwrap(), "tip");
+        assert!(!codex.join("scripts").exists());
+
+        // A copy Harness Sync wrote and nobody edited is replaced without a backup.
+        let newer = share(&drive, saved.revision, &["tip"], [("tip".to_string(), skill(&[("SKILL.md", "tip v2")]))].into(), BTreeMap::new());
+        let third = run(Some(&newer), &desk, &mut state, Write::Always, Some(&backups));
+        assert_eq!(state_of(&third, "codex", "tip"), Some(SkillState::Updated));
+        assert!(find(&third, "codex", "tip").unwrap().backup.is_none());
+
+        // Only the newest backups are kept.
+        for round in 0..KEPT_BACKUPS + 2 {
+            let text = round.to_string();
+            back_up(&backups, "codex", "tip", &skill(&[("SKILL.md", text.as_str())])).unwrap();
+        }
+        let mut left: Vec<PathBuf> = fs::read_dir(backups.join("codex").join("tip")).unwrap().map(|entry| entry.unwrap().path()).collect();
+        left.sort();
+        assert_eq!(left.len(), KEPT_BACKUPS);
+        assert_eq!(fs::read_to_string(left.last().unwrap().join("SKILL.md")).unwrap(), (KEPT_BACKUPS + 1).to_string());
+    }
+
+    #[test]
+    fn finds_outside_edits_that_are_safe_to_upload() {
+        let drive = fsutil::temp_dir("skills-upload").join("harness-sync.json");
+        let (desk, mut state) = machine("skills-upload-desk", &["claude", "codex"]);
+        let created = document::create(&drive, "Rules".into(), "desk").unwrap();
+        let tip = |text: &str| -> BTreeMap<String, Skill> { [("tip".to_string(), skill(&[("SKILL.md", text)]))].into() };
+        let saved = share(&drive, created.revision, &["tip"], tip("tip"), BTreeMap::new());
+        // A differing copy that was there before the first apply is not this app's to upload.
+        let claude = desk.skills_dir("claude").join("tip/SKILL.md");
+        fs::create_dir_all(claude.parent().unwrap()).unwrap();
+        fs::write(&claude, "older local").unwrap();
+        assert!(outside_edits(&saved, &desk, &state).is_empty());
+
+        run(Some(&saved), &desk, &mut state, Write::Always, None);
+        assert!(outside_edits(&saved, &desk, &state).is_empty());
+
+        // One tool's copy edited: safe.
+        let codex = desk.skills_dir("codex").join("tip/SKILL.md");
+        fs::write(&codex, "mine").unwrap();
+        let checked = run(Some(&saved), &desk, &mut state, Write::KeepOutsideEdits, None);
+        assert!(find(&checked, "codex", "tip").unwrap().auto_upload);
+        assert_eq!(outside_edits(&saved, &desk, &state), tip("mine"));
+
+        // Two tools edited differently: a conflict. Edited the same way: safe again.
+        fs::write(&claude, "theirs").unwrap();
+        assert!(outside_edits(&saved, &desk, &state).is_empty());
+        fs::write(&claude, "mine").unwrap();
+        assert_eq!(outside_edits(&saved, &desk, &state), tip("mine"));
+
+        // An edit that is not a valid skill is never uploaded.
+        fs::write(&claude, "tip").unwrap();
+        fs::write(&codex, "bad\0").unwrap();
+        assert!(outside_edits(&saved, &desk, &state).is_empty());
+
+        // The sync file moved on while this copy was edited: a conflict for the user to settle.
+        fs::write(&codex, "mine").unwrap();
+        let newer = share(&drive, saved.revision, &["tip"], tip("tip v2"), BTreeMap::new());
+        assert!(outside_edits(&newer, &desk, &state).is_empty());
+        let auto = run(Some(&newer), &desk, &mut state, Write::KeepOutsideEdits, None);
+        assert!(!find(&auto, "codex", "tip").unwrap().auto_upload);
+        assert_eq!(fs::read_to_string(&codex).unwrap(), "mine");
+        assert!(outside_edits(&newer, &desk, &state).is_empty());
     }
 
     #[test]
@@ -501,7 +678,7 @@ mod tests {
         tools.insert("codex".into(), document::ToolPreset { skill_mode: document::Mode::Off, ..Default::default() });
         let uploads = [("base".to_string(), skill(&[("SKILL.md", "base")])), ("extra".to_string(), skill(&[("SKILL.md", "extra")]))].into();
         let saved = share(&drive, created.revision, &["base"], uploads, tools);
-        let report = run(Some(&saved), &desk, &mut state, Write::Always);
+        let report = run(Some(&saved), &desk, &mut state, Write::Always, None);
         assert_eq!(state_of(&report, "claude", "base"), Some(SkillState::Updated));
         assert_eq!(state_of(&report, "claude", "extra"), Some(SkillState::Updated));
         assert_eq!(state_of(&report, "opencode", "base"), None);
@@ -526,7 +703,7 @@ mod tests {
             fs::create_dir_all(desk.skills_dir("claude")).unwrap();
             std::os::unix::fs::symlink(&elsewhere, desk.skills_dir("claude").join("tip")).unwrap();
         }
-        let report = run(Some(&saved), &desk, &mut state, Write::Always);
+        let report = run(Some(&saved), &desk, &mut state, Write::Always, None);
         assert_eq!(state_of(&report, "codex", "tip"), None);
         assert!(!desk.skills_dir("codex").join("tip").exists());
         #[cfg(unix)]

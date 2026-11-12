@@ -33,6 +33,8 @@ static POPOVER_HIDDEN_AT: Mutex<Option<Instant>> = Mutex::new(None);
 struct App {
     locations: Locations,
     state_path: PathBuf,
+    /// Where replaced skill copies and replaced sync-file skill versions are saved, in app data.
+    backups: PathBuf,
     /// Serializes every read-modify-write of local state, tool files and the sync file.
     gate: Mutex<Runtime>,
 }
@@ -125,7 +127,7 @@ impl App {
             _ => None,
         };
         let tools = apply::run(document, &self.locations, &mut local, write);
-        let skills = skills::run(document, &self.locations, &mut local, write);
+        let skills = skills::run(document, &self.locations, &mut local, write, Some(&self.backups));
         if write != Write::Never {
             if let Some(Ok((_, hash))) = &loaded {
                 local.last_file_hash = Some(hash.clone());
@@ -180,6 +182,48 @@ impl App {
             .collect()
     }
 
+    /// Uploads skills edited in a tool's folder when that is safe (see `skills::outside_edits`).
+    /// The worker passes `seen`, the edits found by its previous check, and an edit is uploaded only
+    /// when that check found the same content, so a half-written skill is not shared. With no
+    /// `seen` the user asked for a sync and nothing waits. The sync file's version being replaced is
+    /// saved to `backups` first. Returns whether the sync file changed. Caller holds the gate.
+    fn upload_outside_edits(&self, runtime: &mut Runtime, seen: Option<&mut BTreeMap<String, String>>) -> bool {
+        let local = self.local(runtime);
+        let loaded = local.sync_file.as_ref().map(|path| (path, document::load(path)));
+        let Some((path, Ok((document, _)))) = loaded else {
+            if let (Some(seen), None) = (seen, &local.sync_file) {
+                seen.clear();
+            }
+            return false;
+        };
+        let mut edits = skills::outside_edits(&document, &self.locations, &local);
+        if let Some(seen) = seen {
+            let found = edits.iter().map(|(name, skill)| (name.clone(), skills::hash(skill))).collect();
+            let previous = std::mem::replace(seen, found);
+            edits.retain(|name, skill| previous.get(name) == Some(&skills::hash(skill)));
+        }
+        edits.retain(|name, _| {
+            document.skills.get(name).is_some_and(|old| skills::back_up(&self.backups, "library", name, old).is_ok())
+        });
+        if edits.is_empty() {
+            return false;
+        }
+        let presets = Presets {
+            shared: document.shared.clone(),
+            tools: document.tools.clone(),
+            shared_skills: document.shared_skills.clone(),
+            skill_sources: BTreeMap::new(),
+        };
+        document::save(path, document.revision, presets, edits, &local.device()).is_ok()
+    }
+
+    /// An apply the user asked for. Safe outside edits to skills are uploaded first, so the apply
+    /// spreads them instead of replacing them; only conflicting copies are replaced. Caller holds the gate.
+    fn apply_for_user(&self, runtime: &mut Runtime) -> Result<Status, String> {
+        self.upload_outside_edits(runtime, None);
+        self.refresh(runtime, Write::Always)
+    }
+
     fn with_gate<T>(&self, work: impl FnOnce(&mut Runtime) -> Result<T, String>) -> Result<T, String> {
         let mut runtime = self.gate.lock().map_err(|_| "Harness Sync is shutting down")?;
         work(&mut runtime)
@@ -209,7 +253,8 @@ fn file_stamp(path: &std::path::Path) -> Option<(PathBuf, u64, std::time::System
     Some((path.to_path_buf(), metadata.len(), metadata.modified().ok()?))
 }
 
-/// Polls the sync file and applies it whenever its bytes change, keeping outside edits.
+/// Polls the sync file and applies it whenever its bytes change, keeping outside edits. About once
+/// a minute it also uploads skills edited in a tool's folder when that cannot lose anyone's work.
 fn background(app: AppHandle) {
     std::thread::spawn(move || {
         let mut first = true;
@@ -218,6 +263,8 @@ fn background(app: AppHandle) {
         let mut stamp = None;
         // The hash read last tick, so an invalid file is parsed once.
         let mut tried: Option<String> = None;
+        // Skill edits found by the last full check, by skill name and hash.
+        let mut seen_edits = BTreeMap::new();
         loop {
             let state = app.state::<App>();
             let result = state.with_gate(|runtime| {
@@ -226,9 +273,14 @@ fn background(app: AppHandle) {
                     stamp = None;
                     return Ok(None);
                 };
+                let full = tick % FULL_CHECK_TICKS == 0;
+                if full {
+                    // A successful upload changes the file, which the check below then applies.
+                    state.upload_outside_edits(runtime, Some(&mut seen_edits));
+                }
                 let current = file_stamp(&path);
                 // Some filesystems keep the modified time, so check fully about once a minute.
-                if tick % FULL_CHECK_TICKS != 0 && current.is_some() && current == stamp {
+                if !full && current.is_some() && current == stamp {
                     return Ok(None);
                 }
                 stamp = None;
@@ -297,7 +349,7 @@ fn get_status(app: State<'_, App>) -> Result<Status, String> {
 
 #[tauri::command]
 fn apply_now(app: State<'_, App>) -> Result<Status, String> {
-    app.with_gate(|runtime| app.refresh(runtime, Write::Always))
+    app.with_gate(|runtime| app.apply_for_user(runtime))
 }
 
 #[tauri::command]
@@ -417,7 +469,7 @@ fn save_presets(app: State<'_, App>, presets: Presets, expected_revision: u64) -
         let path = local.sync_file.clone().ok_or("Connect a sync file first")?;
         let uploads = app.read_skill_sources(&presets)?;
         document::save(&path, expected_revision, presets, uploads, &local.device())?;
-        app.refresh(runtime, Write::Always)
+        app.apply_for_user(runtime)
     })
 }
 
@@ -573,6 +625,7 @@ pub fn run() {
             app.manage(App {
                 locations,
                 state_path: data.join("state.json"),
+                backups: data.join("backups"),
                 gate: Mutex::new(Runtime::default()),
             });
             background(app.handle().clone());
@@ -613,4 +666,84 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Harness Sync");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn stable_outside_edit_is_uploaded_and_reaches_other_tools() {
+        let root = fsutil::temp_dir("auto-upload");
+        let locations = tools::test_locations(&root.join("home"));
+        for id in ["claude", "codex"] {
+            fs::create_dir_all(locations.config_dir(id)).unwrap();
+        }
+        let claude = locations.skills_dir("claude").join("tip/SKILL.md");
+        let codex = locations.skills_dir("codex").join("tip/SKILL.md");
+        fs::create_dir_all(claude.parent().unwrap()).unwrap();
+        fs::write(&claude, "tip").unwrap();
+        let app = App {
+            locations,
+            state_path: root.join("data/state.json"),
+            backups: root.join("data/backups"),
+            gate: Mutex::new(Runtime::default()),
+        };
+        let drive = root.join("drive/harness-sync.json");
+        let created = document::create(&drive, "Rules".into(), "desk").unwrap();
+        let mut runtime = Runtime::default();
+        app.connect(&mut runtime, drive.clone()).unwrap();
+        let presets = Presets {
+            shared: "Rules".into(),
+            shared_skills: vec!["tip".into()],
+            skill_sources: [("tip".to_string(), "claude".to_string())].into(),
+            ..Default::default()
+        };
+        let uploads = app.read_skill_sources(&presets).unwrap();
+        document::save(&drive, created.revision, presets, uploads, "desk").unwrap();
+        app.refresh(&mut runtime, Write::Always).unwrap();
+        assert_eq!(fs::read_to_string(&codex).unwrap(), "tip");
+
+        // An edit is uploaded only once two checks in a row find the same content.
+        let mut seen = BTreeMap::new();
+        fs::write(&claude, "tip, improved").unwrap();
+        assert!(!app.upload_outside_edits(&mut runtime, Some(&mut seen)));
+        fs::write(&claude, "tip, improved twice").unwrap();
+        assert!(!app.upload_outside_edits(&mut runtime, Some(&mut seen)));
+        assert_eq!(document::load(&drive).unwrap().0.revision, 2);
+        assert!(app.upload_outside_edits(&mut runtime, Some(&mut seen)));
+        let (document, _) = document::load(&drive).unwrap();
+        assert_eq!(document.revision, 3);
+        assert_eq!(document.skills["tip"].files["SKILL.md"], "tip, improved twice");
+
+        // The automatic apply then gives the other tool the edit, and nothing is left flagged.
+        let status = app.refresh(&mut runtime, Write::KeepOutsideEdits).unwrap();
+        assert_eq!(fs::read_to_string(&codex).unwrap(), "tip, improved twice");
+        assert!(status.skills.tools.iter().flat_map(|tool| &tool.skills).all(|skill| !skill.edited_outside));
+        assert!(!app.upload_outside_edits(&mut runtime, Some(&mut seen)));
+
+        // The sync file's previous version of the skill was kept.
+        let kept = fs::read_dir(app.backups.join("library/tip")).unwrap().next().unwrap().unwrap().path();
+        assert_eq!(fs::read_to_string(kept.join("SKILL.md")).unwrap(), "tip");
+
+        // Sync now uploads a safe edit at once and spreads it, instead of replacing it.
+        fs::write(&codex, "edited in codex").unwrap();
+        let status = app.apply_for_user(&mut runtime).unwrap();
+        assert_eq!(document::load(&drive).unwrap().0.revision, 4);
+        assert_eq!(fs::read_to_string(&codex).unwrap(), "edited in codex");
+        assert_eq!(fs::read_to_string(&claude).unwrap(), "edited in codex");
+        assert!(status.skills.tools.iter().flat_map(|tool| &tool.skills).all(|skill| skill.backup.is_none()));
+
+        // Copies edited differently in two tools are a conflict: Sync now replaces both, with backups.
+        fs::write(&codex, "codex says").unwrap();
+        fs::write(&claude, "claude says").unwrap();
+        let status = app.apply_for_user(&mut runtime).unwrap();
+        assert_eq!(document::load(&drive).unwrap().0.revision, 4);
+        assert_eq!(fs::read_to_string(&codex).unwrap(), "edited in codex");
+        assert_eq!(fs::read_to_string(&claude).unwrap(), "edited in codex");
+        let saved: Vec<String> = status.skills.tools.iter().flat_map(|tool| &tool.skills).filter_map(|skill| skill.backup.clone()).collect();
+        assert_eq!(saved.len(), 2);
+        assert!(saved.iter().any(|dir| fs::read_to_string(std::path::Path::new(dir).join("SKILL.md")).unwrap() == "codex says"));
+    }
 }

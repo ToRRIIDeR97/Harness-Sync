@@ -8,9 +8,9 @@ Tauri 2 desktop app. The React UI calls narrow Rust commands and has no filesyst
 | --- | --- |
 | `tools.rs` | The five supported tools, their global instruction and skills paths (with `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `XDG_CONFIG_HOME` overrides) and installation detection |
 | `document.rs` | Sync file format, validation, create, revision-checked save, Drive conflict-copy detection |
-| `skills.rs` | Reading, validating, hashing, writing and removing skill folders; listing skills found only on this computer |
+| `skills.rs` | Reading, validating, hashing, writing and removing skill folders; listing skills found only on this computer; backing up replaced copies; finding outside edits that are safe to upload |
 | `apply.rs` | Rendering presets per tool, comparing and replacing tool files, capturing this computer's files as presets |
-| `state.rs` | Per-computer state in app data: sync-file path, computer name, last applied hashes per tool and per tool skill, which skill copies it wrote, last applied file hash. An unreadable state file is renamed to `state.json.unreadable-<unix seconds>` and the app shows a warning for the session before continuing with defaults |
+| `state.rs` | Per-computer state in app data: sync-file path, computer name, last applied hashes per tool and per tool skill, which skill copies it wrote, last applied file hash. An unreadable state file is renamed to `state.json.unreadable-<unix time>` and the app shows a warning for the session before continuing with defaults |
 | `fsutil.rs` | Size-limited reads, atomic writes, hashing, timestamps |
 | `lib.rs` | Commands, background worker, tray icon and status popover, autostart, notifications |
 
@@ -52,6 +52,10 @@ Skill changes are part of the editor draft and are saved with `save_presets`. Th
 
 For every installed tool whose skill mode is not `off`, applying compares each wanted skill's hash with the local folder. A differing folder is made identical: files are written atomically and extra files removed, leaving ignored ones. A copy that changed since the last apply is reported as edited outside; automatic applies leave it alone. When a skill leaves a tool's set, the copy is deleted only if Harness Sync created or replaced it (`writtenSkills`) and its hash still matches the last apply. Originals that were shared from that folder, and changed copies, are kept and no longer tracked. Skills outside a tool's set are listed but never written. Symlinked skill folders or files are refused.
 
+Before a copy is replaced, it is saved to `backups/<tool>/<skill>/<unix time>` in app data unless its hash equals the last apply for that tool, which means Harness Sync wrote or confirmed it and nothing would be lost. If the backup cannot be written the copy is left alone and reported as an error. The five newest backups per copy are kept. The report names the backup folder for that run.
+
+About once a minute the worker calls `skills::outside_edits`. An edited copy is safe to upload when the tool's last-applied hash equals the sync file's current hash for that skill (the file has not moved since), the copy passes skill validation, and every other edited copy of that skill on this computer is identical. A copy that was never applied, or one edited while the file also changed, is a conflict and stays manual ("Use this version"). A safe edit is uploaded only when two checks in a row find the same content, so a skill that is still being written is not shared. The upload saves the sync file's previous version of the skill to `backups/library/<skill>/<unix time>`, then calls `document::save` with the unchanged presets and the current revision; a stale revision simply fails and is retried on the next check. The changed file is then applied like any other change, which updates the other tools. Sync now and saving presets run the same upload first, without waiting for a second check, so they spread a safe edit and replace only conflicting copies.
+
 The Skills page lists each installed tool's folder. Dragging a skill into **Shared skills** (HTML drag and drop, which needs `dragDropEnabled: false` on the window) or choosing **Share** adds it to the shared set. Each tool's page has a second mode picker for skills and a checklist for its extras.
 
 ## Saving and applying
@@ -66,7 +70,7 @@ Opening an existing file only stages it. The user then joins with either the fil
 
 ## Background behavior
 
-A worker applies once at launch, then checks the sync file's size and modified time every 5 seconds, hashes its bytes when they change and at least once a minute, and parses and applies it only when the hash changes. These automatic applies keep instruction files and skill copies edited outside the app and report them as differing; Sync now, saving presets, joining and "use this computer" replace them. Tool files are not rewritten between file changes; differences are reported as outside edits until the next change or Sync now. A mutex serializes the worker with all commands. A notification reports presets applied from another computer.
+A worker applies once at launch, then checks the sync file's size and modified time every 5 seconds, hashes its bytes when they change and at least once a minute, and parses and applies it only when the hash changes. These automatic applies keep instruction files and skill copies edited outside the app and report them as differing; Sync now, saving presets, joining and "use this computer" replace them. Tool files are not rewritten between file changes; differences are reported as outside edits until the next change or Sync now. A mutex serializes the worker with all commands. About once a minute it also uploads safe outside edits to skills (see Skills). A notification reports presets applied from another computer.
 
 Left-clicking the tray icon toggles a small undecorated `tray` window (`index.html#tray`) beside the icon; it hides when it loses focus. Right-click keeps the Open and Quit menu.
 

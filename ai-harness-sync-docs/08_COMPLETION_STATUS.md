@@ -1,5 +1,16 @@
 # Implementation and verification status
 
+## 2026-11-12: automatic skill uploads and skill backups
+
+A shared skill edited in one tool's folder is now uploaded to the sync file by the background worker, about once a minute, when that cannot lose anyone's work: the file still holds the version last applied to that tool, the copy is a valid skill, and no other tool's copy on the computer was changed differently. The edit must be found unchanged by two checks in a row. Conflicts stay manual. Before a skill copy is replaced it is saved under `backups/` in app data unless Harness Sync wrote it and nobody edited it; the sync file's previous version of an uploaded skill is saved there too. This reverses two earlier decisions for skills only: no backups, and no copying of outside edits back.
+
+- `cargo test --lib` passes 23 tests, three new: backups of a pre-existing copy and of an outside edit with an extra file, no backup for an unedited copy, pruning to the five newest; which outside edits count as safe (one tool, two tools identical, two tools different, invalid content, file changed meanwhile, never-applied copy); and an upload through `App` that waits for a stable edit, raises the revision, reaches the other tool on the next automatic apply and keeps the previous library version.
+- `tsc -b` passes with the two new report fields.
+- Sync now and saving presets upload safe skill edits before applying, so they no longer replace an edit that was about to be shared. The upload test now also covers Sync now with one safe edit (uploaded at once, no backup needed) and with two conflicting edits (both replaced, both backed up).
+- Windows, installed build: after restoring seven edited skills into Claude Code's folder, the worker uploaded them about two minutes later and the other four tools received them; sync file revision 8 became 9. Earlier, Sync now had replaced those edits twice and the backups restored them.
+
+Not yet verified: Sync now in the native window after this change, the new Skills page texts visually, and a live two-computer Google Drive round trip of an automatic upload.
+
 ## 2026-10-08: ignore Python caches in skills
 
 Skills that had run a Python script were refused with "…pyc is not UTF-8 text". `__pycache__` folders and `.pyc` files are now ignored like hidden files: not read, synced or removed. The two-computer skills test now includes both; `cargo test --lib` passes 17 tests.
@@ -44,6 +55,8 @@ Not yet verified: the tray popover (shell access was not available to click the 
 ## Limits
 
 - Concurrent saves on two computers within Drive's sync delay can still produce a Drive conflict copy; the app reports it but does not merge.
-- Outside edits to tool files are kept by automatic syncs but replaced, with no backup, by Sync now or the next save.
+- Outside edits to instruction files are kept by automatic syncs but replaced, with no backup, by Sync now or the next save. Skill copies are backed up first.
+- An automatic upload cannot be turned off, and two computers that edit the same skill before either upload arrives are not merged: the later computer keeps its copy and flags it.
+- Skill backups are kept only on the computer that made them, five per copy.
 - MCP definitions and project skills are not synced. Skills with binary files (images, PDFs) cannot be added.
 - Every computer needs the version 5 app once the file is saved by it; older versions refuse the file.
