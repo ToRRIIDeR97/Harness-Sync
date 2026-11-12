@@ -15,7 +15,7 @@ export type SyncDocument = {
 }
 
 export type SkillState = 'inSync' | 'differs' | 'updated' | 'error' | 'local'
-export type LocalSkill = { name: string; description: string; files: number; wanted: boolean; state: SkillState; editedOutside: boolean; message: string | null }
+export type LocalSkill = { name: string; description: string; files: number; wanted: boolean; state: SkillState; editedOutside: boolean; autoUpload: boolean; backup: string | null; message: string | null }
 export type ToolSkills = { tool: string; folder: string; skills: LocalSkill[] }
 export type LibrarySkill = { name: string; description: string; files: number }
 export type SkillsReport = { library: LibrarySkill[]; tools: ToolSkills[] }

@@ -27,7 +27,7 @@ Global skills sync the same way. The **Skills** page lists the skills in each to
 | Antigravity | `~/.gemini/antigravity/skills/` |
 | Command Code | `~/.commandcode/skills/` |
 
-Skills you don't share are never touched. Unsharing a skill removes the copies Harness Sync made, never the original. Project instruction files, MCP definitions and settings are not synced.
+Skills you don't share are never touched. If you edit a shared skill directly in one tool's folder, Harness Sync uploads it by itself after about two minutes and the other tools and computers follow, unless the same skill was also changed somewhere else; then it is flagged on the Skills page for you to choose. Before the app replaces a skill copy it did not write, it saves that copy under `backups` in its app data folder. Unsharing a skill removes the copies Harness Sync made, never the original. Project instruction files, MCP definitions and settings are not synced.
 
 ## Set up
 
