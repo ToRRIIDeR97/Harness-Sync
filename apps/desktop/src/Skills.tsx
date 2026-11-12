@@ -160,7 +160,7 @@ function SkillRow({ skill, tool, toolName, draft, edits }: { skill: LocalSkill; 
       {skill.message && <span className="error-text">{skill.message}</span>}
       {skill.backup && <span className="subtle">The replaced copy was saved to {skill.backup}</span>}
       {skill.editedOutside && !uploading && <span className="warn-text">{skill.autoUpload
-        ? "Uploads by itself within about two minutes, unless another tool's copy was changed differently. Sync now replaces it instead."
+        ? "Uploads by itself within about two minutes, or right away with Sync now, unless another tool's copy was changed differently."
         : 'Automatic syncs leave this copy alone; Sync now replaces it and keeps a backup.'}</span>}
       {((skill.editedOutside && !uploading) || (!shared && skill.files > 0)) &&
         <span className="skill-row-actions">

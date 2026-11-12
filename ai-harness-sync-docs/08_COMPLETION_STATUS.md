@@ -6,8 +6,10 @@ A shared skill edited in one tool's folder is now uploaded to the sync file by t
 
 - `cargo test --lib` passes 23 tests, three new: backups of a pre-existing copy and of an outside edit with an extra file, no backup for an unedited copy, pruning to the five newest; which outside edits count as safe (one tool, two tools identical, two tools different, invalid content, file changed meanwhile, never-applied copy); and an upload through `App` that waits for a stable edit, raises the revision, reaches the other tool on the next automatic apply and keeps the previous library version.
 - `tsc -b` passes with the two new report fields.
+- Sync now and saving presets upload safe skill edits before applying, so they no longer replace an edit that was about to be shared. The upload test now also covers Sync now with one safe edit (uploaded at once, no backup needed) and with two conflicting edits (both replaced, both backed up).
+- Windows, installed build: after restoring seven edited skills into Claude Code's folder, the worker uploaded them about two minutes later and the other four tools received them; sync file revision 8 became 9. Earlier, Sync now had replaced those edits twice and the backups restored them.
 
-Not yet verified: the app running natively with these changes, the worker's once-a-minute timing, the new Skills page texts visually, and a live two-computer Google Drive round trip of an automatic upload.
+Not yet verified: Sync now in the native window after this change, the new Skills page texts visually, and a live two-computer Google Drive round trip of an automatic upload.
 
 ## 2026-10-08: ignore Python caches in skills
 
